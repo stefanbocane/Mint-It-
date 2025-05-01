@@ -1,0 +1,43 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Helper function to check if user is authenticated
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    // Helper function to check if user is accessing their own data
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+    
+    // Users collection
+    match /users/{userId} {
+      allow read: if isAuthenticated();
+      allow create: if isOwner(userId);
+      allow update: if isOwner(userId);
+    }
+    
+    // Cards collection
+    match /cards/{cardId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated();
+      allow update: if isAuthenticated() && resource.data.ownerId == request.auth.uid;
+    }
+    
+    // Mints collection and subcollections
+    match /mints/{userId}/{document=**} {
+      allow read, write: if isOwner(userId);
+    }
+    
+    // Trades collection
+    match /trades/{tradeId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated();
+      allow update: if isAuthenticated() && (
+        resource.data.fromUser == request.auth.uid ||
+        resource.data.toUser == request.auth.uid
+      );
+    }
+  }
+}

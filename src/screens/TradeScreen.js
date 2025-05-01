@@ -1,5 +1,5 @@
 import { useNavigation } from '@react-navigation/native';
-import { addDoc, collection, getDocs, query, where } from 'firebase/firestore';
+import { addDoc, collection, doc, getDocs, query, serverTimestamp, updateDoc, where } from 'firebase/firestore';
 import React, { useEffect, useState } from 'react';
 import { Alert, FlatList, SafeAreaView, StyleSheet } from 'react-native';
 import { Appbar, Button, Card, Chip, Menu, Modal, Portal, Text } from 'react-native-paper';
@@ -15,7 +15,7 @@ const TradeScreen = () => {
   const [loading, setLoading] = useState(true);
   const [menuVisible, setMenuVisible] = useState(false);
   const [selectedUser, setSelectedUser] = useState(null);
-  const { user } = useAuth();
+  const { user, updateCoinBalance } = useAuth();
   const navigation = useNavigation();
 
   useEffect(() => {
@@ -69,29 +69,35 @@ const TradeScreen = () => {
   };
 
   const handleTrade = async () => {
-    if (!selectedUser) {
-      Alert.alert('No User Selected', 'Please select a user to trade with');
-      return;
-    }
+    if (!selectedCard || !selectedUser || !user) return;
 
+    setLoading(true);
     try {
-      setLoading(true);
-      
-      await addDoc(collection(db, 'trades'), {
-        fromUser: user.uid,
-        toUser: selectedUser.id,
+      // Create trade offer
+      const tradeRef = await addDoc(collection(db, 'trades'), {
         cardId: selectedCard.id,
+        fromUserId: user.uid,
+        toUserId: selectedUser.id,
         status: 'pending',
-        createdAt: new Date(),
+        createdAt: serverTimestamp()
       });
+
+      // Update card ownership
+      await updateDoc(doc(db, 'cards', selectedCard.id), {
+        ownerId: selectedUser.id,
+        lastTradeId: tradeRef.id
+      });
+
+      // Update local state
+      setCards(prev => prev.filter(card => card.id !== selectedCard.id));
 
       Alert.alert('Success', 'Trade offer sent successfully!');
       setShowModal(false);
       setSelectedCard(null);
       setSelectedUser(null);
     } catch (error) {
-      console.error('Error creating trade:', error);
-      Alert.alert('Error', 'Failed to create trade offer. Please try again.');
+      console.error('Trade error:', error);
+      Alert.alert('Error', 'Failed to send trade offer. Please try again.');
     } finally {
       setLoading(false);
     }

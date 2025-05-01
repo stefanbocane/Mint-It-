@@ -1,7 +1,6 @@
 import { useNavigation } from '@react-navigation/native';
-import * as FaceDetector from 'expo-face-detector';
 import * as ImagePicker from 'expo-image-picker';
-import { addDoc, collection, doc, increment, serverTimestamp, updateDoc } from 'firebase/firestore';
+import { addDoc, collection, doc, getDoc, getDocs, increment, query, serverTimestamp, setDoc, updateDoc, where } from 'firebase/firestore';
 import { getDownloadURL, ref, uploadBytes } from 'firebase/storage';
 import objectHash from 'object-hash';
 import React, { useState } from 'react';
@@ -18,7 +17,7 @@ const MintScreen = () => {
   const [loading, setLoading] = useState(false);
   const [selectedImage, setSelectedImage] = useState(null);
   const [imageMetadata, setImageMetadata] = useState(null);
-  const { user } = useAuth();
+  const { user, updateCoinBalance } = useAuth();
   const navigation = useNavigation();
 
   const pickImage = async () => {
@@ -62,112 +61,115 @@ const MintScreen = () => {
     }
   };
 
-  const getRarityColor = (rarity) => {
-    const colors = {
-      common: '#757575',
-      rare: '#2196F3',
-      epic: '#9C27B0',
-      legendary: '#FFD700',
-    };
-    return colors[rarity] || '#757575';
-  };
-
   const handleMint = async () => {
-    if (!selectedImage || !imageMetadata) {
-      Alert.alert('No Image', 'Please select an image to mint');
-      return;
-    }
-
+    if (!selectedImage || !imageMetadata || !user) return;
+    
+    setLoading(true);
     try {
-      setLoading(true);
-
-      const userDoc = doc(db, 'users', user.uid);
-      const userData = await userDoc.get();
-      if (userData.data().coinBalance < MINT_COST) {
-        Alert.alert('Insufficient Funds', `You need ${MINT_COST} coins to mint a card`);
-        return;
-      }
-
-      // Detect faces
-      const fd = await FaceDetector.detectFacesAsync(selectedImage, { 
-        mode: FaceDetector.Constants.Mode.fast 
-      });
-      const faceCount = fd.faces.length;
+      // Deduct minting cost
+      await updateCoinBalance(-MINT_COST);
 
       // Get timestamp
       const timestamp = new Date();
+      console.log('Timestamp:', timestamp);
 
       // Check if first mint today
       const todayString = timestamp.toDateString();
+      console.log('Checking first mint for date:', todayString);
       const logRef = doc(db, 'mints', user.uid, 'logs', todayString);
-      const isFirstMintToday = !(await logRef.get()).exists;
+      const logSnap = await getDoc(logRef);
+      const isFirstMintToday = !logSnap.exists();
+      console.log('Is first mint today:', isFirstMintToday);
 
       // Check uniqueness
+      console.log('Checking image uniqueness...');
       const hash = objectHash(imageMetadata.base64 + timestamp.getTime());
-      const dupSnap = await db.collection('cards').where('hash', '==', hash).get();
+      const dupQuery = query(collection(db, 'cards'), where('hash', '==', hash));
+      const dupSnap = await getDocs(dupQuery);
       const isUnique = dupSnap.size < 3;
+      console.log('Is unique:', isUnique, 'Duplicates found:', dupSnap.size);
 
       // Check daily boost
-      const lastBoostDate = userData.data().lastBoostDate?.toDate()?.toDateString();
-      const hasDailyBoost = lastBoostDate !== todayString && userData.data().coinBalance >= 10;
+      console.log('Checking daily boost eligibility...');
+      const lastBoostDate = user.lastBoostDate?.toDate()?.toDateString();
+      const hasDailyBoost = lastBoostDate !== todayString && user.coinBalance >= 10;
+      console.log('Has daily boost:', hasDailyBoost, 'Last boost date:', lastBoostDate);
 
       // Compute rarity
-      const rarity = await computeRarity({ 
-        timestamp, 
-        faceCount, 
-        isFirstMintToday, 
-        isUnique, 
-        hasDailyBoost 
-      });
+      console.log('Computing rarity...');
+      try {
+        const rarity = await computeRarity({ 
+          timestamp, 
+          isFirstMintToday, 
+          isUnique, 
+          hasDailyBoost 
+        });
+        console.log('Computed rarity:', rarity);
 
-      // Upload image
-      const response = await fetch(selectedImage);
-      const blob = await response.blob();
-      const imageRef = ref(storage, `cards/${user.uid}/${Date.now()}`);
-      await uploadBytes(imageRef, blob);
-      const imageUrl = await getDownloadURL(imageRef);
+        // Upload image
+        console.log('Uploading image...');
+        const response = await fetch(selectedImage);
+        const blob = await response.blob();
+        const imageRef = ref(storage, `cards/${user.uid}/${Date.now()}`);
+        await uploadBytes(imageRef, blob);
+        const imageUrl = await getDownloadURL(imageRef);
+        console.log('Image uploaded successfully');
 
-      // Calculate coin value based on rarity
-      const coinValue = {
-        common: 5,
-        rare: 20,
-        epic: 50,
-        legendary: 150
-      }[rarity];
+        // Calculate coin value based on rarity
+        const coinValue = {
+          common: 5,
+          rare: 20,
+          epic: 50,
+          legendary: 150
+        }[rarity];
+        console.log('Coin value:', coinValue);
 
-      // Deduct mint cost and optional boost cost
-      await updateDoc(userDoc, {
-        coinBalance: increment(-MINT_COST - (hasDailyBoost ? 5 : 0)),
-        lastBoostDate: hasDailyBoost ? serverTimestamp() : lastBoostDate
-      });
+        // Deduct mint cost and optional boost cost
+        console.log('Updating user balance...');
+        const userRef = doc(db, 'users', user.uid);
+        await updateDoc(userRef, {
+          coinBalance: increment(-MINT_COST - (hasDailyBoost ? 5 : 0)),
+          lastBoostDate: hasDailyBoost ? serverTimestamp() : user.lastBoostDate
+        });
+        console.log('User balance updated');
 
-      // Create card document
-      const cardRef = await addDoc(collection(db, 'cards'), {
-        ownerId: user.uid,
-        imageUrl,
-        rarity,
-        hash,
-        hour: timestamp.getHours(),
-        createdAt: serverTimestamp(),
-        coinValue
-      });
+        // Create card document
+        console.log('Creating card document...');
+        await addDoc(collection(db, 'cards'), {
+          ownerId: user.uid,
+          imageUrl,
+          rarity,
+          hash,
+          hour: timestamp.getHours(),
+          createdAt: serverTimestamp(),
+          coinValue
+        });
+        console.log('Card document created');
 
-      // Log the mint
-      await logRef.set({ mintedAt: serverTimestamp() });
+        // Log the mint
+        console.log('Logging mint...');
+        await setDoc(logRef, { mintedAt: serverTimestamp() });
+        console.log('Mint logged successfully');
 
-      Alert.alert('Success', `Card minted successfully! Rarity: ${rarity.toUpperCase()}`, [
-        {
-          text: 'OK',
-          onPress: () => {
-            setSelectedImage(null);
-            setImageMetadata(null);
-            navigation.navigate('Home');
+        Alert.alert('Success', `Card minted successfully! Rarity: ${rarity.toUpperCase()}`, [
+          {
+            text: 'OK',
+            onPress: () => {
+              setSelectedImage(null);
+              setImageMetadata(null);
+              navigation.navigate('Home');
+            }
           }
-        }
-      ]);
+        ]);
+      } catch (rarityError) {
+        console.error('Error in rarity calculation:', rarityError);
+        Alert.alert('Error', 'Failed to calculate card rarity. Please try again.');
+      }
     } catch (error) {
+      // If minting fails, refund the coins
+      await updateCoinBalance(MINT_COST);
       console.error('Minting error:', error);
-      Alert.alert('Error', 'Failed to mint card. Please try again.');
+      Alert.alert('Error', `Failed to mint card: ${error.message}`);
     } finally {
       setLoading(false);
     }
@@ -217,6 +219,7 @@ const MintScreen = () => {
         {selectedImage && (
           <View style={styles.detailsContainer}>
             <Text style={styles.costText}>Mint Cost: {MINT_COST} coins</Text>
+            <Text style={styles.balanceText}>Your Balance: {user?.coinBalance || 0} coins</Text>
             <Text style={styles.boostText}>
               Daily Boost Available: +5 coins for +5% rarity
             </Text>
@@ -227,7 +230,7 @@ const MintScreen = () => {
           mode="contained"
           onPress={handleMint}
           loading={loading}
-          disabled={!selectedImage || loading}
+          disabled={!selectedImage || loading || !user?.coinBalance || user.coinBalance < MINT_COST}
           style={styles.mintButton}
         >
           Mint Card
@@ -276,6 +279,11 @@ const styles = StyleSheet.create({
     marginBottom: 16,
   },
   costText: {
+    fontSize: 16,
+    color: theme.colors.text,
+    marginBottom: 8,
+  },
+  balanceText: {
     fontSize: 16,
     color: theme.colors.text,
     marginBottom: 8,

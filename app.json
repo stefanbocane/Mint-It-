@@ -7,16 +7,33 @@
     "icon": "./assets/images/icon.png",
     "scheme": "cardmates",
     "userInterfaceStyle": "automatic",
-    "newArchEnabled": true,
+    "splash": {
+      "image": "./assets/images/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#ffffff"
+    },
+    "assetBundlePatterns": [
+      "**/*"
+    ],
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.anonymous.Cardmates",
+      "infoPlist": {
+        "NSCameraUsageDescription": "Allow Cardmates to access your camera to take photos for minting cards",
+        "NSPhotoLibraryUsageDescription": "Allow Cardmates to access your photos to select images for minting cards"
+      }
     },
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/adaptive-icon.png",
         "backgroundColor": "#ffffff"
       },
-      "edgeToEdgeEnabled": true
+      "package": "com.anonymous.Cardmates",
+      "permissions": [
+        "CAMERA",
+        "READ_EXTERNAL_STORAGE",
+        "WRITE_EXTERNAL_STORAGE"
+      ]
     },
     "web": {
       "bundler": "metro",
@@ -24,15 +41,14 @@
       "favicon": "./assets/images/favicon.png"
     },
     "plugins": [
-      [
-        "expo-splash-screen",
-        {
-          "image": "./assets/images/splash-icon.png",
-          "imageWidth": 200,
-          "resizeMode": "contain",
-          "backgroundColor": "#ffffff"
-        }
-      ]
-    ]
+      "expo-splash-screen",
+      "expo-image-picker",
+      "expo-camera",
+      "expo-notifications"
+    ],
+    "experiments": {
+      "tsconfigPaths": true
+    },
+    "newArchEnabled": true
   }
 }

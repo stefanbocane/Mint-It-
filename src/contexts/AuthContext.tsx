@@ -1,10 +1,9 @@
 import * as AppleAuth from 'expo-apple-authentication';
 import * as Google from 'expo-auth-session/providers/google';
-import { initializeApp } from 'firebase/app';
 import {
+    Auth,
     createUserWithEmailAndPassword,
     signOut as firebaseSignOut,
-    getAuth,
     GoogleAuthProvider,
     OAuthProvider,
     onAuthStateChanged,
@@ -13,23 +12,29 @@ import {
     User,
     UserCredential
 } from 'firebase/auth';
-import { doc, getDoc, serverTimestamp, setDoc } from 'firebase/firestore';
+import { doc, Firestore, getDoc, serverTimestamp, setDoc, updateDoc } from 'firebase/firestore';
 import React, { createContext, ReactNode, useContext, useEffect, useState } from 'react';
-import { db } from '../config/firebase';
-import firebaseConfig from '../config/firebaseConfig';
+import { auth as firebaseAuth, db as firebaseDb } from '../config/firebase';
 
-// Initialize Firebase app & auth once
-const app = initializeApp(firebaseConfig);
-const auth = getAuth(app);
+const auth = firebaseAuth as Auth;
+const db = firebaseDb as Firestore;
+
+// Extended user type to include Firestore data
+type ExtendedUser = User & {
+  coinBalance?: number;
+  lastBoostDate?: Date;
+};
 
 type AuthContextType = {
-  user: User | null;
+  user: ExtendedUser | null;
   loading: boolean;
+  error: string | null;
   signUp: (email: string, password: string) => Promise<UserCredential>;
   signIn: (email: string, password: string) => Promise<UserCredential>;
   signOut: () => Promise<void>;
   signInWithGoogle: () => Promise<any>;
   signInWithApple: () => Promise<UserCredential>;
+  updateCoinBalance: (amount: number) => Promise<void>;
 };
 
 type AuthContextProviderProps = {
@@ -45,65 +50,129 @@ export function useAuth() {
 }
 
 export default function AuthContextProvider({ children }: AuthContextProviderProps) {
-  const [user, setUser] = useState<User | null>(null);
+  const [user, setUser] = useState<ExtendedUser | null>(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   const [request, response, promptGoogleSignIn] = Google.useAuthRequest({
     clientId: '<YOUR_GOOGLE_IOS_CLIENT_ID>',
     iosClientId: '<YOUR_GOOGLE_IOS_CLIENT_ID>',
-    expoClientId: '<YOUR_GOOGLE_EXPO_CLIENT_ID>',
+    androidClientId: '<YOUR_GOOGLE_ANDROID_CLIENT_ID>',
     responseType: 'id_token',
     scopes: ['profile', 'email'],
   });
 
-  // Track auth state
-  useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async u => {
-      console.log('🛠️ onAuthStateChanged fired, user =', u);
-      setUser(u);
-      setLoading(false);
-      if (u) {
-        // ensure we have a Firestore doc
-        const userRef = doc(db, 'users', u.uid);
-        console.log('🛠️ Checking Firestore for user doc at', userRef.path);
-        const snap = await getDoc(userRef);
-        if (!snap.exists()) {
-          console.log('🛠️ No user doc found, creating one now');
-          await setDoc(userRef, {
-            uid: u.uid,
-            email: u.email,
-            displayName: u.displayName || '',
-            coinBalance: 100,
-            createdAt: serverTimestamp()
-          });
-          console.log('🛠️ User doc created');
-        }
+  // Function to fetch and merge Firestore user data
+  const updateUserWithFirestoreData = async (authUser: User) => {
+    try {
+      const userRef = doc(db, 'users', authUser.uid);
+      const snap = await getDoc(userRef);
+      
+      if (!snap.exists()) {
+        // Create new user document
+        const userData = {
+          uid: authUser.uid,
+          email: authUser.email,
+          displayName: authUser.displayName || '',
+          coinBalance: 100,
+          createdAt: serverTimestamp()
+        };
+        await setDoc(userRef, userData);
+        setUser({ ...authUser, ...userData });
+      } else {
+        // Merge existing Firestore data with auth user
+        setUser({ ...authUser, ...snap.data() });
       }
-    });
-    return unsubscribe;
+    } catch (err) {
+      console.error('Error updating user data:', err);
+      setError(err instanceof Error ? err.message : 'Failed to update user data');
+    }
+  };
+
+  // Initialize auth state listener
+  useEffect(() => {
+    let unsubscribe: () => void;
+
+    const initializeAuth = async () => {
+      try {
+        if (!auth) {
+          throw new Error('Firebase Auth is not initialized');
+        }
+
+        unsubscribe = onAuthStateChanged(auth, async (u) => {
+          console.log('🛠️ onAuthStateChanged fired, user =', u);
+          if (u) {
+            await updateUserWithFirestoreData(u);
+          } else {
+            setUser(null);
+          }
+          setLoading(false);
+        });
+      } catch (err) {
+        console.error('Auth initialization error:', err);
+        setError(err instanceof Error ? err.message : 'Failed to initialize auth');
+        setLoading(false);
+      }
+    };
+
+    initializeAuth();
+    return () => {
+      if (unsubscribe) {
+        unsubscribe();
+      }
+    };
   }, []);
 
   // Handle Google Sign In response
   useEffect(() => {
-    if (response?.type === 'success') {
+    if (response?.type === 'success' && auth) {
       const { id_token } = response.params;
       const credential = GoogleAuthProvider.credential(id_token);
-      signInWithCredential(auth, credential);
+      signInWithCredential(auth, credential).catch(err => {
+        console.error('Google sign in error:', err);
+        setError(err instanceof Error ? err.message : 'Failed to sign in with Google');
+      });
     }
   }, [response]);
 
-  // Email/password
-  const signUp = (email: string, password: string) =>
-    createUserWithEmailAndPassword(auth, email, password);
+  // Function to update coin balance
+  const updateCoinBalance = async (amount: number) => {
+    if (!user) return;
+    
+    try {
+      const userRef = doc(db, 'users', user.uid);
+      const newBalance = (user.coinBalance || 0) + amount;
+      
+      await updateDoc(userRef, {
+        coinBalance: newBalance
+      });
+      
+      setUser((prev: ExtendedUser | null) => prev ? { ...prev, coinBalance: newBalance } : null);
+    } catch (err) {
+      console.error('Error updating coin balance:', err);
+      setError(err instanceof Error ? err.message : 'Failed to update coin balance');
+    }
+  };
 
-  const signIn = (email: string, password: string) =>
-    signInWithEmailAndPassword(auth, email, password);
+  // Auth methods with error handling
+  const signUp = async (email: string, password: string) => {
+    if (!auth) throw new Error('Firebase Auth is not initialized');
+    return createUserWithEmailAndPassword(auth, email, password);
+  };
 
-  // Google
-  const signInWithGoogle = () => promptGoogleSignIn();
+  const signIn = async (email: string, password: string) => {
+    if (!auth) throw new Error('Firebase Auth is not initialized');
+    return signInWithEmailAndPassword(auth, email, password);
+  };
 
-  // Apple
+  const signInWithGoogle = () => {
+    if (!auth) throw new Error('Firebase Auth is not initialized');
+    return promptGoogleSignIn();
+  };
+
   const signInWithApple = async () => {
+    if (!auth) throw new Error('Firebase Auth is not initialized');
+    
     const res = await AppleAuth.signInAsync({
       requestedScopes: [AppleAuth.AppleAuthenticationScope.FULL_NAME, AppleAuth.AppleAuthenticationScope.EMAIL],
     });
@@ -118,17 +187,21 @@ export default function AuthContextProvider({ children }: AuthContextProviderPro
     return signInWithCredential(auth, credential);
   };
 
-  // Sign out
-  const signOut = () => firebaseSignOut(auth);
+  const signOut = async () => {
+    if (!auth) throw new Error('Firebase Auth is not initialized');
+    return firebaseSignOut(auth);
+  };
 
   const value: AuthContextType = {
     user,
     loading,
+    error,
     signUp,
     signIn,
     signOut,
     signInWithGoogle,
-    signInWithApple
+    signInWithApple,
+    updateCoinBalance
   };
 
   return (

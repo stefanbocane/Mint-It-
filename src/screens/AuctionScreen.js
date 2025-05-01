@@ -1,9 +1,10 @@
 import { useNavigation } from '@react-navigation/native';
-import { addDoc, collection, doc, getDocs, orderBy, query, updateDoc, where } from 'firebase/firestore';
+import { collection, doc, getDocs, increment, orderBy, query, serverTimestamp, updateDoc, where } from 'firebase/firestore';
 import React, { useEffect, useState } from 'react';
-import { FlatList, StyleSheet, View } from 'react-native';
+import { Alert, FlatList, StyleSheet, View } from 'react-native';
 import { Appbar, Button, Card, Text, TextInput } from 'react-native-paper';
-import { auth, db } from '../config/firebase';
+import { db } from '../config/firebase';
+import { useAuth } from '../contexts/AuthContext';
 
 const AuctionScreen = () => {
   const [auctions, setAuctions] = useState([]);
@@ -11,6 +12,7 @@ const AuctionScreen = () => {
   const [bidAmount, setBidAmount] = useState('');
   const [loading, setLoading] = useState(false);
   const navigation = useNavigation();
+  const { user, updateCoinBalance } = useAuth();
 
   useEffect(() => {
     loadActiveAuctions();
@@ -36,54 +38,48 @@ const AuctionScreen = () => {
   };
 
   const handleBid = async () => {
-    if (!selectedAuction || !bidAmount) {
-      alert('Please select an auction and enter a bid amount');
-      return;
-    }
-
-    const bid = parseFloat(bidAmount);
+    if (!selectedAuction || !bidAmount || !user) return;
+    
+    const bid = parseInt(bidAmount);
     if (isNaN(bid) || bid <= selectedAuction.currentBid) {
-      alert('Bid must be higher than current bid');
+      Alert.alert('Invalid Bid', 'Your bid must be higher than the current bid');
       return;
     }
 
+    if (user.coinBalance < bid) {
+      Alert.alert('Insufficient Funds', 'You don\'t have enough coins for this bid');
+      return;
+    }
+
+    setLoading(true);
     try {
-      setLoading(true);
+      // Deduct bid amount
+      await updateCoinBalance(-bid);
 
-      // Check if user has enough coins
-      const userDoc = await getDocs(doc(db, 'users', auth.currentUser.uid));
-      const userData = userDoc.data();
-      if (userData.coinBalance < bid) {
-        alert('Not enough coins');
-        return;
-      }
-
-      // Update auction with new bid
-      await updateDoc(doc(db, 'auctions', selectedAuction.id), {
+      // Update auction in Firestore
+      const auctionRef = doc(db, 'auctions', selectedAuction.id);
+      await updateDoc(auctionRef, {
         currentBid: bid,
-        currentBidder: auth.currentUser.uid,
-        lastBidTime: new Date()
+        currentBidder: user.uid,
+        bidCount: increment(1),
+        lastBidTime: serverTimestamp()
       });
 
-      // Record bid history
-      await addDoc(collection(db, 'bids'), {
-        auctionId: selectedAuction.id,
-        userId: auth.currentUser.uid,
-        amount: bid,
-        timestamp: new Date()
-      });
+      // Update local state
+      setAuctions(prev => prev.map(a => 
+        a.id === selectedAuction.id 
+          ? { ...a, currentBid: bid, currentBidder: user.uid, bidCount: (a.bidCount || 0) + 1 }
+          : a
+      ));
 
-      // Update user's coin balance
-      await updateDoc(doc(db, 'users', auth.currentUser.uid), {
-        coinBalance: userData.coinBalance - bid
-      });
-
-      alert('Bid placed successfully!');
+      Alert.alert('Success', 'Bid placed successfully!');
       setBidAmount('');
-      loadActiveAuctions();
+      setSelectedAuction(null);
     } catch (error) {
-      console.error('Bid error:', error);
-      alert('Error placing bid');
+      // If bid fails, refund the coins
+      await updateCoinBalance(bid);
+      console.error('Bidding error:', error);
+      Alert.alert('Error', 'Failed to place bid. Please try again.');
     } finally {
       setLoading(false);
     }
