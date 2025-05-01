@@ -59,13 +59,16 @@ export default function AuthContextProvider({ children }: AuthContextProviderPro
   // Track auth state
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async u => {
+      console.log('🛠️ onAuthStateChanged fired, user =', u);
       setUser(u);
       setLoading(false);
       if (u) {
         // ensure we have a Firestore doc
         const userRef = doc(db, 'users', u.uid);
+        console.log('🛠️ Checking Firestore for user doc at', userRef.path);
         const snap = await getDoc(userRef);
         if (!snap.exists()) {
+          console.log('🛠️ No user doc found, creating one now');
           await setDoc(userRef, {
             uid: u.uid,
             email: u.email,
@@ -73,6 +76,7 @@ export default function AuthContextProvider({ children }: AuthContextProviderPro
             coinBalance: 100,
             createdAt: serverTimestamp()
           });
+          console.log('🛠️ User doc created');
         }
       }
     });
