@@ -2,19 +2,25 @@ import { registerRootComponent } from 'expo';
 import { AppRegistry } from 'react-native';
 import 'react-native-gesture-handler';
 import App from './App';
+import { auth } from './src/config/firebase';
 
-/* ---  SAFETY PATCH ----------------------------------------------
-   Some library in your bundle tries to register a component called "auth".
-   We monkey-patch registerComponent so that if **anything** asks for "auth",
-   we give it the real App component instead and never crash.          */
-const originalRegister = AppRegistry.registerComponent;
-AppRegistry.registerComponent = (key, getComp) => {
-  if (key === 'auth') {
-    console.warn('[entry] Intercepted rogue registration for "auth"; mapping to App.');
-    return originalRegister('auth', () => App);
+// Ensure Firebase auth is initialized before registering components
+const initAuth = async () => {
+  try {
+    // Wait for auth to be ready
+    await new Promise((resolve) => {
+      const unsubscribe = auth.onAuthStateChanged(() => {
+        unsubscribe();
+        resolve(true);
+      });
+    });
+    
+    // Register components after auth is ready
+    AppRegistry.registerComponent('auth', () => App);
+    registerRootComponent(App);
+  } catch (error) {
+    console.error('Firebase initialization error:', error);
   }
-  return originalRegister(key, getComp);
 };
 
-// 🚀 Standard Expo registration (produces component name "main")
-registerRootComponent(App); 
+initAuth(); 
