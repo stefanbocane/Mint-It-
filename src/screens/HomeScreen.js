@@ -69,6 +69,14 @@ const HomeScreen = () => {
           >
             Leaderboard
           </Button>
+
+          <Button
+            mode="outlined"
+            onPress={() => navigation.navigate('UsersDebug')}
+            style={{ marginTop: 16 }}
+          >
+            Debug: View Users
+          </Button>
         </View>
       </ScrollView>
 

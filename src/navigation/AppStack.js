@@ -1,10 +1,11 @@
-import React from 'react';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
+import React from 'react';
+import AuctionScreen from '../screens/AuctionScreen';
 import HomeScreen from '../screens/HomeScreen';
+import LeaderboardScreen from '../screens/LeaderboardScreen';
 import MintScreen from '../screens/MintScreen';
 import TradeScreen from '../screens/TradeScreen';
-import AuctionScreen from '../screens/AuctionScreen';
-import LeaderboardScreen from '../screens/LeaderboardScreen';
+import UsersDebugScreen from '../screens/UsersDebugScreen';
 
 const Stack = createNativeStackNavigator();
 
@@ -20,6 +21,7 @@ const AppStack = () => {
       <Stack.Screen name="Trade" component={TradeScreen} />
       <Stack.Screen name="Auction" component={AuctionScreen} />
       <Stack.Screen name="Leaderboard" component={LeaderboardScreen} />
+      <Stack.Screen name="UsersDebug" component={UsersDebugScreen} options={{ title: 'Debug Users' }} />
     </Stack.Navigator>
   );
 };
