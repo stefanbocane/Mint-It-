@@ -1,8 +1,8 @@
-import React, { useState, useEffect } from 'react';
-import { View, StyleSheet, FlatList } from 'react-native';
-import { Button, Text, Card, TextInput } from 'react-native-paper';
-import { auth, db } from '../firebase';
-import { collection, query, where, getDocs, addDoc, updateDoc, doc, orderBy, limit } from 'firebase/firestore';
+import { addDoc, collection, doc, getDocs, orderBy, query, updateDoc, where } from 'firebase/firestore';
+import React, { useEffect, useState } from 'react';
+import { FlatList, StyleSheet, View } from 'react-native';
+import { Button, Card, Text, TextInput } from 'react-native-paper';
+import { auth, db } from '../config/firebase';
 
 const AuctionScreen = () => {
   const [auctions, setAuctions] = useState([]);

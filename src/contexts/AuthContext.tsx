@@ -14,7 +14,7 @@ import {
     UserCredential
 } from 'firebase/auth';
 import React, { createContext, ReactNode, useContext, useEffect, useState } from 'react';
-import firebaseConfig from '../config/firebaseConfig';
+import firebaseConfig from '../firebaseConfig';
 
 // Initialize Firebase app & auth once
 const app = initializeApp(firebaseConfig);

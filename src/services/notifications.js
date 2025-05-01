@@ -1,8 +1,8 @@
-import * as Notifications from 'expo-notifications';
 import * as Device from 'expo-device';
-import { Platform } from 'react-native';
-import { db } from '../firebase';
+import * as Notifications from 'expo-notifications';
 import { doc, setDoc } from 'firebase/firestore';
+import { Platform } from 'react-native';
+import { db } from '../config/firebase';
 
 // Configure notifications
 Notifications.setNotificationHandler({
