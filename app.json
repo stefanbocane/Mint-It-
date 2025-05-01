@@ -7,6 +7,8 @@
     "icon": "./assets/images/icon.png",
     "scheme": "cardmates",
     "userInterfaceStyle": "automatic",
+    "sdkVersion": "49.0.0",
+    "runtimeVersion": "49",
     "splash": {
       "image": "./assets/images/splash-icon.png",
       "resizeMode": "contain",
@@ -30,9 +32,10 @@
       },
       "package": "com.anonymous.Cardmates",
       "permissions": [
-        "CAMERA",
-        "READ_EXTERNAL_STORAGE",
-        "WRITE_EXTERNAL_STORAGE"
+        "android.permission.CAMERA",
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.WRITE_EXTERNAL_STORAGE",
+        "android.permission.RECORD_AUDIO"
       ]
     },
     "web": {
@@ -49,6 +52,11 @@
     "experiments": {
       "tsconfigPaths": true
     },
-    "newArchEnabled": true
+    "newArchEnabled": true,
+    "extra": {
+      "eas": {
+        "projectId": "420acf72-35f8-422e-935e-88116abe9832"
+      }
+    }
   }
 }
