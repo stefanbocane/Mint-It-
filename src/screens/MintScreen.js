@@ -4,7 +4,7 @@ import { addDoc, collection, doc, increment, updateDoc } from 'firebase/firestor
 import { getDownloadURL, ref, uploadBytes } from 'firebase/storage';
 import React, { useState } from 'react';
 import { Alert, Image, SafeAreaView, ScrollView, StyleSheet, View } from 'react-native';
-import { Button, Card, Chip, IconButton, Text } from 'react-native-paper';
+import { Appbar, Button, Card, Chip, IconButton, Text } from 'react-native-paper';
 import { db, storage } from '../config/firebase';
 import { useAuth } from '../contexts/AuthContext';
 import { theme } from '../theme';
@@ -155,6 +155,10 @@ const MintScreen = () => {
 
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: theme.colors.background }}>
+      <Appbar.Header>
+        <Appbar.BackAction onPress={() => navigation.navigate('Home')} />
+        <Appbar.Content title="Mint New Card" />
+      </Appbar.Header>
       <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 16 }}>
         <Card style={styles.card}>
           <Card.Content style={styles.cardContent}>

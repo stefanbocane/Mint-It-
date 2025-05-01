@@ -1,7 +1,8 @@
+import { useNavigation } from '@react-navigation/native';
 import { addDoc, collection, getDocs, query, where } from 'firebase/firestore';
 import React, { useEffect, useState } from 'react';
 import { Alert, FlatList, SafeAreaView, StyleSheet } from 'react-native';
-import { Button, Card, Chip, Menu, Modal, Portal, Text } from 'react-native-paper';
+import { Appbar, Button, Card, Chip, Menu, Modal, Portal, Text } from 'react-native-paper';
 import { db } from '../config/firebase';
 import { useAuth } from '../contexts/AuthContext';
 import { theme } from '../theme';
@@ -15,6 +16,7 @@ const TradeScreen = () => {
   const [menuVisible, setMenuVisible] = useState(false);
   const [selectedUser, setSelectedUser] = useState(null);
   const { user } = useAuth();
+  const navigation = useNavigation();
 
   useEffect(() => {
     fetchUserCards();
@@ -123,6 +125,10 @@ const TradeScreen = () => {
 
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: theme.colors.background }}>
+      <Appbar.Header>
+        <Appbar.BackAction onPress={() => navigation.navigate('Home')} />
+        <Appbar.Content title="Trade Cards" />
+      </Appbar.Header>
       <FlatList
         data={cards}
         renderItem={renderCard}

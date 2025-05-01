@@ -1,12 +1,14 @@
-import React, { useState, useEffect } from 'react';
-import { View, StyleSheet, FlatList } from 'react-native';
-import { Text, List, ActivityIndicator } from 'react-native-paper';
-import { collection, query, orderBy, limit, getDocs } from 'firebase/firestore';
+import { useNavigation } from '@react-navigation/native';
+import { collection, getDocs, limit, orderBy, query } from 'firebase/firestore';
+import React, { useEffect, useState } from 'react';
+import { FlatList, StyleSheet, View } from 'react-native';
+import { ActivityIndicator, Appbar, List, Text } from 'react-native-paper';
 import { db } from '../config/firebase';
 
 const LeaderboardScreen = () => {
   const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(true);
+  const navigation = useNavigation();
 
   useEffect(() => {
     fetchTopUsers();
@@ -53,6 +55,10 @@ const LeaderboardScreen = () => {
 
   return (
     <View style={styles.container}>
+      <Appbar.Header>
+        <Appbar.BackAction onPress={() => navigation.navigate('Home')} />
+        <Appbar.Content title="Leaderboard" />
+      </Appbar.Header>
       <Text style={styles.title}>Top Collectors</Text>
       {loading ? (
         <ActivityIndicator size="large" />

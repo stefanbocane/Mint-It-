@@ -1,7 +1,8 @@
+import { useNavigation } from '@react-navigation/native';
 import { addDoc, collection, doc, getDocs, orderBy, query, updateDoc, where } from 'firebase/firestore';
 import React, { useEffect, useState } from 'react';
 import { FlatList, StyleSheet, View } from 'react-native';
-import { Button, Card, Text, TextInput } from 'react-native-paper';
+import { Appbar, Button, Card, Text, TextInput } from 'react-native-paper';
 import { auth, db } from '../config/firebase';
 
 const AuctionScreen = () => {
@@ -9,6 +10,7 @@ const AuctionScreen = () => {
   const [selectedAuction, setSelectedAuction] = useState(null);
   const [bidAmount, setBidAmount] = useState('');
   const [loading, setLoading] = useState(false);
+  const navigation = useNavigation();
 
   useEffect(() => {
     loadActiveAuctions();
@@ -111,6 +113,10 @@ const AuctionScreen = () => {
 
   return (
     <View style={styles.container}>
+      <Appbar.Header>
+        <Appbar.BackAction onPress={() => navigation.navigate('Home')} />
+        <Appbar.Content title="Auction House" />
+      </Appbar.Header>
       <Text variant="headlineMedium" style={styles.title}>Active Auctions</Text>
       
       <FlatList
