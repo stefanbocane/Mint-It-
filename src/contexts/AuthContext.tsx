@@ -13,7 +13,9 @@ import {
     User,
     UserCredential
 } from 'firebase/auth';
+import { doc, getDoc, serverTimestamp, setDoc } from 'firebase/firestore';
 import React, { createContext, ReactNode, useContext, useEffect, useState } from 'react';
+import { db } from '../config/firebase';
 import firebaseConfig from '../config/firebaseConfig';
 
 // Initialize Firebase app & auth once
@@ -56,9 +58,23 @@ export default function AuthContextProvider({ children }: AuthContextProviderPro
 
   // Track auth state
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, user => {
-      setUser(user);
+    const unsubscribe = onAuthStateChanged(auth, async u => {
+      setUser(u);
       setLoading(false);
+      if (u) {
+        // ensure we have a Firestore doc
+        const userRef = doc(db, 'users', u.uid);
+        const snap = await getDoc(userRef);
+        if (!snap.exists()) {
+          await setDoc(userRef, {
+            uid: u.uid,
+            email: u.email,
+            displayName: u.displayName || '',
+            coinBalance: 100,
+            createdAt: serverTimestamp()
+          });
+        }
+      }
     });
     return unsubscribe;
   }, []);
