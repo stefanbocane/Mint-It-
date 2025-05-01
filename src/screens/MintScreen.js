@@ -3,7 +3,7 @@ import * as ImagePicker from 'expo-image-picker';
 import { addDoc, collection, doc, increment, updateDoc } from 'firebase/firestore';
 import { getDownloadURL, ref, uploadBytes } from 'firebase/storage';
 import React, { useState } from 'react';
-import { Alert, SafeAreaView, ScrollView, StyleSheet, View } from 'react-native';
+import { Alert, Image, SafeAreaView, ScrollView, StyleSheet, View } from 'react-native';
 import { Button, Card, Chip, IconButton, Text } from 'react-native-paper';
 import { db, storage } from '../config/firebase';
 import { useAuth } from '../contexts/AuthContext';
