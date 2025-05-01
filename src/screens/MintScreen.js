@@ -1,3 +1,4 @@
+import { useNavigation } from '@react-navigation/native';
 import * as ImagePicker from 'expo-image-picker';
 import { addDoc, collection, doc, increment, updateDoc } from 'firebase/firestore';
 import { getDownloadURL, ref, uploadBytes } from 'firebase/storage';
@@ -14,6 +15,7 @@ const MintScreen = () => {
   const [loading, setLoading] = useState(false);
   const [selectedImage, setSelectedImage] = useState(null);
   const { user } = useAuth();
+  const navigation = useNavigation();
 
   const pickImage = async () => {
     const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
@@ -134,8 +136,15 @@ const MintScreen = () => {
         timestamp: new Date(),
       });
 
-      Alert.alert('Success', 'Card minted successfully!');
-      setSelectedImage(null);
+      Alert.alert('Success', 'Card minted successfully!', [
+        {
+          text: 'OK',
+          onPress: () => {
+            setSelectedImage(null);
+            navigation.navigate('Home');
+          }
+        }
+      ]);
     } catch (error) {
       console.error('Minting error:', error);
       Alert.alert('Error', 'Failed to mint card. Please try again.');

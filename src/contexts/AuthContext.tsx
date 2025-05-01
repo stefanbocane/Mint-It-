@@ -14,7 +14,7 @@ import {
     UserCredential
 } from 'firebase/auth';
 import React, { createContext, ReactNode, useContext, useEffect, useState } from 'react';
-import firebaseConfig from '../firebaseConfig';
+import firebaseConfig from '../config/firebaseConfig';
 
 // Initialize Firebase app & auth once
 const app = initializeApp(firebaseConfig);
@@ -87,7 +87,12 @@ export default function AuthContextProvider({ children }: AuthContextProviderPro
     const res = await AppleAuth.signInAsync({
       requestedScopes: [AppleAuth.AppleAuthenticationScope.FULL_NAME, AppleAuth.AppleAuthenticationScope.EMAIL],
     });
+    
     const { identityToken } = res;
+    if (!identityToken) {
+      throw new Error('No identity token received from Apple Sign In');
+    }
+    
     const provider = new OAuthProvider('apple.com');
     const credential = provider.credential({ idToken: identityToken });
     return signInWithCredential(auth, credential);
