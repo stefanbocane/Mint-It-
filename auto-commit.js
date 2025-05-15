@@ -15,12 +15,17 @@ const watcher = chokidar.watch('.', {
     '**/*.tmp',
   ],
   ignoreInitial: true,
-  persistent: true
+  persistent: true,
+  usePolling: true,  // More reliable file watching
+  interval: 100,     // Poll every 100ms
+  binaryInterval: 300
 });
 
-let timeout;
-
 console.log('Watching for file changes... (Press Ctrl+C to stop)');
+
+// Track last commit time to prevent rapid-fire commits
+let lastCommitTime = 0;
+const MIN_COMMIT_INTERVAL = 1000; // 1 second between commits
 
 watcher
   .on('add', path => processChange('added', path))
@@ -28,31 +33,31 @@ watcher
   .on('unlink', path => processChange('deleted', path));
 
 function processChange(changeType, path) {
-  console.log(`File ${path} was ${changeType}`);
+  const now = Date.now();
   
-  // Clear any existing timeout
-  if (timeout) clearTimeout(timeout);
+  // Skip if we've committed recently
+  if (now - lastCommitTime < MIN_COMMIT_INTERVAL) {
+    return;
+  }
   
-  // Set a new timeout to commit changes after 5 seconds of no activity
-  timeout = setTimeout(() => {
-    console.log('Committing changes...');
-    
-    const commands = [
-      'git add .',
-      `git commit -m "Auto-commit: ${new Date().toISOString()}"`,
-      'git push origin main',
-    ];
-    
-    exec(commands.join(' && '), (error, stdout, stderr) => {
-      if (error) {
-        console.error(`Error: ${error.message}`);
-        return;
-      }
-      if (stderr) {
-        console.error(`stderr: ${stderr}`);
-        return;
-      }
-      console.log(`Changes committed and pushed at ${new Date().toISOString()}`);
-    });
-  }, 5000); // 5 second delay before committing
+  console.log(`File ${path} was ${changeType}. Committing changes...`);
+  
+  const commands = [
+    'git add .',
+    `git commit -m "Auto-commit: ${new Date().toISOString()}"`,
+    'git push origin main',
+  ];
+  
+  exec(commands.join(' && '), (error, stdout, stderr) => {
+    if (error) {
+      console.error(`Error: ${error.message}`);
+      return;
+    }
+    if (stderr) {
+      console.error(`stderr: ${stderr}`);
+      return;
+    }
+    lastCommitTime = Date.now();
+    console.log(`Changes committed and pushed at ${new Date().toISOString()}`);
+  });
 }
