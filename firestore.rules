@@ -1,43 +1,57 @@
 rules_version = '2';
+
 service cloud.firestore {
   match /databases/{database}/documents {
-    // Helper function to check if user is authenticated
+    // Helper functions
     function isAuthenticated() {
       return request.auth != null;
     }
     
-    // Helper function to check if user is accessing their own data
     function isOwner(userId) {
       return isAuthenticated() && request.auth.uid == userId;
     }
     
-    // Users collection
-    match /users/{userId} {
-      allow read: if isAuthenticated();
-      allow create: if isOwner(userId);
-      allow update: if isOwner(userId);
+    function isGroupMember(groupId) {
+      return isAuthenticated() && 
+        exists(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid));
     }
     
-    // Cards collection
+    // User profiles
+    match /users/{userId} {
+      // Only the user can see their full document (including email)
+      allow read: if isAuthenticated() && request.auth.uid == userId;
+      // All other users can only see username and photoURL
+      allow get: if isAuthenticated() && request.auth.uid != userId &&
+        resource.data.keys().hasOnly(['username', 'photoURL']);
+      allow write: if isOwner(userId);
+    }
+    
+    // Groups
+    match /groups/{groupId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated();
+      allow update, delete: if isGroupMember(groupId);
+      
+      // Group members subcollection
+      match /members/{memberId} {
+        allow read: if isAuthenticated();
+        allow write: if isGroupMember(groupId);
+      }
+    }
+    
+    // Auctions
+    match /auctions/{auctionId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated();
+      allow update: if isGroupMember(resource.data.groupId);
+      allow delete: if isGroupMember(resource.data.groupId);
+    }
+    
+    // Cards
     match /cards/{cardId} {
       allow read: if isAuthenticated();
       allow create: if isAuthenticated();
-      allow update: if isAuthenticated() && resource.data.ownerId == request.auth.uid;
-    }
-    
-    // Mints collection and subcollections
-    match /mints/{userId}/{document=**} {
-      allow read, write: if isOwner(userId);
-    }
-    
-    // Trades collection
-    match /trades/{tradeId} {
-      allow read: if isAuthenticated();
-      allow create: if isAuthenticated();
-      allow update: if isAuthenticated() && (
-        resource.data.fromUser == request.auth.uid ||
-        resource.data.toUser == request.auth.uid
-      );
+      allow update, delete: if isOwner(resource.data.ownerId);
     }
   }
 }

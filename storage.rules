@@ -1,0 +1,74 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    // Helper functions
+    function isSignedIn() {
+      return request.auth != null;
+    }
+    
+    function isImageFile() {
+      return request.resource.contentType.matches('image/.*');
+    }
+    
+    function fileSizeUnder(maxSizeMB) {
+      return request.resource.size < maxSizeMB * 1024 * 1024;
+    }
+    
+    // Default rule - deny all
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+    
+    // User profile images
+    match /profileImages/{userId}/{fileName} {
+      // Anyone can view profile images
+      allow read: if true;
+      
+      // Only the user can upload their own profile image
+      allow create, update: if isSignedIn() && 
+                             request.auth.uid == userId && 
+                             isImageFile() && 
+                             fileSizeUnder(5);
+      
+      // Users can delete their own profile images
+      allow delete: if isSignedIn() && request.auth.uid == userId;
+    }
+    
+    // Card images
+    match /cards/{groupId}/{cardId} {
+      // Any authenticated user can read card images
+      allow read: if isSignedIn();
+      
+      // Card owners can upload card images (verified in Firestore rules)
+      allow create, update: if isSignedIn() && 
+                             isImageFile() && 
+                             fileSizeUnder(10);
+                             
+      // Card owners can delete their card images
+      allow delete: if isSignedIn();
+    }
+    
+    // Group images
+    match /groups/{groupId}/{fileName} {
+      // Anyone can view group images
+      allow read: if true;
+      
+      // Only group owners can upload group images (verified in Firestore)
+      allow create, update: if isSignedIn() && 
+                             isImageFile() && 
+                             fileSizeUnder(5);
+                             
+      // Only group owners can delete group images
+      allow delete: if isSignedIn();
+    }
+    
+    // Temporary upload area for image processing
+    match /temp/{userId}/{fileName} {
+      // Only the user can access their temp files
+      allow read, write: if isSignedIn() && request.auth.uid == userId;
+      
+      // Automatically delete after 1 day
+      // Note: this requires a Cloud Function to actually enforce
+    }
+  }
+} 

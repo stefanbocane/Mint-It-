@@ -1,137 +1,170 @@
-import { useNavigation } from '@react-navigation/native';
-import React, { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { ScrollView, StyleSheet, View } from 'react-native';
-import { Appbar, Avatar, Card, Divider, Icon, List, Surface, Text } from 'react-native-paper';
+import { Button, Card, Text } from 'react-native-paper';
+import BackgroundImage from '../components/BackgroundImage';
 import { useAuth } from '../contexts/AuthContext';
-import { theme } from '../theme';
+import { useBalance } from '../contexts/BalanceContext';
+import { useGroup } from '../contexts/GroupContext';
+import { useTheme } from '../contexts/ThemeContext';
+import ScreenBackground from '../components/ScreenBackground';
 
-const HomeScreen = () => {
-  const navigation = useNavigation();
-  const { user, signOut } = useAuth();
-  const [userModalVisible, setUserModalVisible] = useState(false);
+const HomeScreen = ({ navigation }) => {
+  const { theme } = useTheme();
+  const { user } = useAuth();
+  const { currentGroup } = useGroup();
+  const { balance, refreshBalance } = useBalance();
+  const [balanceLoading, setBalanceLoading] = useState(true);
 
-  return (
-    <View style={styles.container}>
-      <Appbar.Header>
-        <Appbar.Content title="Cardmates" />
-        <Appbar.Action icon="account" onPress={() => setUserModalVisible(true)} />
-      </Appbar.Header>
+  useEffect(() => {
+    // Refresh balance when the screen is focused
+    const unsubscribe = navigation.addListener('focus', () => {
+      if (user && currentGroup) {
+        setBalanceLoading(true);
+        refreshBalance(currentGroup.id)
+          .finally(() => setBalanceLoading(false));
+      }
+    });
 
-      <ScrollView contentContainerStyle={styles.content}>
-        {/* User Stats Card */}
-        <Surface style={styles.statsCard}>
-          <View style={styles.userInfo}>
-            <Avatar.Text 
-              size={50} 
-              label={user?.email?.charAt(0).toUpperCase() || 'U'} 
-              style={styles.avatar}
-            />
-            <View style={styles.userDetails}>
-              <Text style={styles.userName}>{user?.email}</Text>
-              <Text style={styles.userBalance}>{user?.coinBalance || 0} coins</Text>
-            </View>
-          </View>
-          <Divider style={styles.divider} />
-          <View style={styles.statsGrid}>
-            <View style={styles.statItem}>
-              <Icon source="cards" size={24} color={theme.colors.primary} />
-              <Text style={styles.statValue}>12</Text>
-              <Text style={styles.statLabel}>Cards</Text>
-            </View>
-            <View style={styles.statItem}>
-              <Icon source="swap-horizontal" size={24} color={theme.colors.primary} />
-              <Text style={styles.statValue}>5</Text>
-              <Text style={styles.statLabel}>Trades</Text>
-            </View>
-            <View style={styles.statItem}>
-              <Icon source="gavel" size={24} color={theme.colors.primary} />
-              <Text style={styles.statValue}>3</Text>
-              <Text style={styles.statLabel}>Auctions</Text>
-            </View>
-          </View>
-        </Surface>
+    if (user && currentGroup) {
+      setBalanceLoading(true);
+      refreshBalance(currentGroup.id)
+        .finally(() => setBalanceLoading(false));
+    }
 
-        {/* Recent Activity */}
-        <Text style={styles.sectionTitle}>Recent Activity</Text>
-        <Card style={styles.activityCard}>
-          <List.Item
-            title="New Card Minted"
-            description="You minted a Rare Card"
-            left={props => <List.Icon {...props} icon="cards-playing-outline" />}
-            right={props => <Text {...props} style={styles.activityTime}>2h ago</Text>}
-          />
-          <Divider />
-          <List.Item
-            title="Trade Completed"
-            description="Traded with @user123"
-            left={props => <List.Icon {...props} icon="swap-horizontal" />}
-            right={props => <Text {...props} style={styles.activityTime}>5h ago</Text>}
-          />
-          <Divider />
-          <List.Item
-            title="Auction Won"
-            description="Won Legendary Card auction"
-            left={props => <List.Icon {...props} icon="gavel" />}
-            right={props => <Text {...props} style={styles.activityTime}>1d ago</Text>}
-          />
-        </Card>
+    return unsubscribe;
+  }, [navigation, user, currentGroup, refreshBalance]);
 
-        {/* Quick Actions */}
-        <Text style={styles.sectionTitle}>Quick Actions</Text>
-        <View style={styles.quickActions}>
-          <Card style={styles.actionCard} onPress={() => navigation.navigate('Mint')}>
-            <Card.Content style={styles.actionContent}>
-              <Icon source="cards-playing-outline" size={32} color={theme.colors.primary} />
-              <Text style={styles.actionText}>Mint Card</Text>
-            </Card.Content>
-          </Card>
-          <Card style={styles.actionCard} onPress={() => navigation.navigate('Trade')}>
-            <Card.Content style={styles.actionContent}>
-              <Icon source="swap-horizontal" size={32} color={theme.colors.primary} />
-              <Text style={styles.actionText}>Trade</Text>
+  if (!user || !currentGroup) {
+    return (
+      <ScreenBackground>
+        <View style={styles.container}>
+          <Card style={[styles.welcomeCard, { backgroundColor: theme.colors.surface }]}>
+            <Card.Content>
+              <Text style={[styles.welcomeText, { color: theme.colors.text }]}>
+                Welcome to Cardmates!
+              </Text>
+              <Text style={[styles.balanceText, { color: theme.colors.textSecondary }]}>
+                Please sign in to access features.
+              </Text>
+              <Button
+                mode="contained"
+                onPress={() => navigation.navigate('Login')}
+                style={{ marginTop: 16 }}
+              >
+                Sign In
+              </Button>
             </Card.Content>
           </Card>
         </View>
+      </ScreenBackground>
+    );
+  }
+
+  return (
+    <ScreenBackground>
+      <ScrollView style={styles.container}>
+        <Card style={[styles.welcomeCard, { backgroundColor: theme.colors.surface }]}>
+          <Card.Content>
+            <Text style={[styles.welcomeText, { color: theme.colors.text }]}>
+              Welcome back, {user?.displayName || 'User'}!
+            </Text>
+            <Text style={[styles.balanceText, { color: theme.colors.textSecondary }]}>
+              Balance in {currentGroup.name}: {balanceLoading ? 'Loading...' : balance} coins
+            </Text>
+          </Card.Content>
+        </Card>
+
+        <View style={styles.buttonContainer}>
+          <Button
+            mode="contained"
+            onPress={() => navigation.navigate('Social')}
+            style={styles.button}
+            icon="account-group"
+          >
+            My Groups
+          </Button>
+
+          <Button
+            mode="contained"
+            onPress={() => navigation.navigate('Mint')}
+            style={styles.button}
+            icon="plus-circle"
+          >
+            Mint New Card
+          </Button>
+
+          <Button
+            mode="outlined"
+            onPress={() => navigation.navigate('Settings')}
+            style={styles.button}
+            icon="cog"
+          >
+            Settings
+          </Button>
+        </View>
+
+        <Card style={[styles.statsCard, { backgroundColor: theme.colors.surface }]}>
+          <Card.Content>
+            <Text style={[styles.statsTitle, { color: theme.colors.text }]}>
+              Your Stats
+            </Text>
+            <View style={styles.statsGrid}>
+              <View style={styles.statItem}>
+                <Text style={[styles.statValue, { color: theme.colors.primary }]}>0</Text>
+                <Text style={[styles.statLabel, { color: theme.colors.textSecondary }]}>
+                  Cards Minted
+                </Text>
+              </View>
+              <View style={styles.statItem}>
+                <Text style={[styles.statValue, { color: theme.colors.primary }]}>0</Text>
+                <Text style={[styles.statLabel, { color: theme.colors.textSecondary }]}>
+                  Groups Joined
+                </Text>
+              </View>
+              <View style={styles.statItem}>
+                <Text style={[styles.statValue, { color: theme.colors.primary }]}>0</Text>
+                <Text style={[styles.statLabel, { color: theme.colors.textSecondary }]}>
+                  Trades Made
+                </Text>
+              </View>
+            </View>
+          </Card.Content>
+        </Card>
       </ScrollView>
-    </View>
+    </ScreenBackground>
   );
 };
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: theme.colors.background,
   },
-  content: {
-    padding: 16,
-  },
-  statsCard: {
-    padding: 16,
+  welcomeCard: {
+    margin: 16,
     borderRadius: 12,
     elevation: 4,
   },
-  userInfo: {
-    flexDirection: 'row',
-    alignItems: 'center',
+  welcomeText: {
+    fontSize: 24,
+    fontWeight: 'bold',
+    marginBottom: 8,
+  },
+  balanceText: {
+    fontSize: 16,
+  },
+  buttonContainer: {
+    padding: 16,
+  },
+  button: {
     marginBottom: 16,
   },
-  avatar: {
-    backgroundColor: theme.colors.primary,
+  statsCard: {
+    marginBottom: 24,
   },
-  userDetails: {
-    marginLeft: 16,
-  },
-  userName: {
-    fontSize: 18,
+  statsTitle: {
+    fontSize: 20,
     fontWeight: 'bold',
-  },
-  userBalance: {
-    fontSize: 16,
-    color: theme.colors.primary,
-    marginTop: 4,
-  },
-  divider: {
-    marginVertical: 16,
+    marginBottom: 16,
   },
   statsGrid: {
     flexDirection: 'row',
@@ -141,48 +174,12 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   statValue: {
-    fontSize: 20,
+    fontSize: 24,
     fontWeight: 'bold',
-    marginTop: 4,
+    marginBottom: 4,
   },
   statLabel: {
-    fontSize: 12,
-    color: theme.colors.outline,
-    marginTop: 2,
-  },
-  sectionTitle: {
-    fontSize: 20,
-    fontWeight: 'bold',
-    marginTop: 24,
-    marginBottom: 12,
-  },
-  activityCard: {
-    borderRadius: 12,
-    elevation: 2,
-  },
-  activityTime: {
-    fontSize: 12,
-    color: theme.colors.outline,
-    alignSelf: 'center',
-  },
-  quickActions: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginTop: 8,
-  },
-  actionCard: {
-    width: '48%',
-    borderRadius: 12,
-    elevation: 2,
-  },
-  actionContent: {
-    alignItems: 'center',
-    padding: 16,
-  },
-  actionText: {
-    marginTop: 8,
-    fontSize: 16,
-    fontWeight: '500',
+    fontSize: 14,
   },
 });
 

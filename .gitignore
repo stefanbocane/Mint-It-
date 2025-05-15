@@ -9,6 +9,8 @@ dist/
 web-build/
 
 # Native
+/android
+/ios
 .kotlin/
 *.orig.*
 *.jks
