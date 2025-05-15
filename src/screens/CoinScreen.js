@@ -9,6 +9,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { useBalance } from '../contexts/BalanceContext';
 import { useGroup } from '../contexts/GroupContext';
 import { useTheme } from '../contexts/ThemeContext';
+import ScreenBackground from '../components/ScreenBackground';
 import { sendCardCoinedNotification } from '../services/notifications';
 import { ensureInitialRewardProtection } from '../utils/balanceUtils';
 
@@ -268,7 +269,8 @@ const CoinScreen = () => {
   }
 
   return (
-    <View style={styles.container}>
+    <ScreenBackground>
+      <View style={styles.container}>
       {!image ? (
         <View style={styles.container}>
           <Camera 
@@ -369,6 +371,7 @@ const CoinScreen = () => {
         </View>
       )}
     </View>
+    </ScreenBackground>
   );
 };
 

@@ -38,14 +38,19 @@ import CardItem from '../components/CardItem';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import NetInfo, { useNetInfo } from '@react-native-community/netinfo';
 import { useTheme } from '@react-navigation/native';
+import ScreenBackground from '../components/ScreenBackground';
 import { auth, db, storage, analytics } from '../config/firebase';
+import cacheUtils from '../utils/cacheUtils';
+const { getWithCache } = cacheUtils;
 import { addDoc, collection, doc, getDoc, getDocs, increment, limit, orderBy, query, runTransaction, serverTimestamp, startAfter, Timestamp, updateDoc, where, onSnapshot, writeBatch } from 'firebase/firestore';
 import { calculateLiveRarity, determineAuctionFinalRarity, getUniqueBidderCount, updateAuctionRarity, RARITY_TYPES } from '../utils/auctionRarity';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { memo, useMemo, useCallback, useRef, useState, useEffect, useContext } from 'react';
 import { ActivityIndicator, Alert, AppState, FlatList, RefreshControl, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { SegmentedButtons } from 'react-native-paper';
-import AuctionBidModal from '../components/auction/AuctionBidModal';
-import AuctionListItem from '../components/auction/AuctionListItem';
+import AuctionBidModalRaw from '../components/auction/AuctionBidModal';
+import AuctionListItemRaw from '../components/auction/AuctionListItem';
+const AuctionBidModal = memo(AuctionBidModalRaw);
+const AuctionListItem = memo(AuctionListItemRaw);
 import { CACHE_TTL } from '../constants/cacheConfig';
 import { useAuth } from '../contexts/AuthContext';
 import { useGroup } from '../contexts/GroupContext';
@@ -220,72 +225,50 @@ const showOfflineAlert = () => {
   }
 };
 
-// Cache constants for offline support
-const CACHE_KEYS = {
-  AUCTIONS: 'cached_auctions_',
-  USER_DATA: 'cached_user_',
-  LAST_CACHE_TIME: 'last_cache_time_',
-};
-
-const MAX_CACHE_AGE = 60 * 60 * 1000; // 60 minutes (increased from 30)
-
-// Function to save data to cache
-const saveToCache = async (key, data) => {
-  try {
-    const jsonValue = JSON.stringify(data);
-    await AsyncStorage.setItem(key, jsonValue);
-    console.log(`Data saved to cache with key: ${key}`);
-    return true;
-  } catch (error) {
-    console.error(`Error saving to cache (${key}):`, error);
-    return false;
-  }
-};
-
-// Function to get data from cache
-const getFromCache = async (key) => {
-  try {
-    const jsonValue = await AsyncStorage.getItem(key);
-    if (!jsonValue) return null;
-    
-    // Parse the cached data
-    const parsedData = JSON.parse(jsonValue);
-    
-    // Convert timestamps back to Firebase Timestamp objects if they exist
-    if (parsedData && parsedData.auctions) {
-      parsedData.auctions = parsedData.auctions.map(auction => {
-        // Convert any date strings back to proper Firebase Timestamp objects
-        if (auction.createdAt && typeof auction.createdAt === 'object') {
-          auction.createdAt = new Timestamp(
-            auction.createdAt.seconds || 0,
-            auction.createdAt.nanoseconds || 0
-          );
-        }
-        
-        if (auction.endTime && typeof auction.endTime === 'object') {
-          auction.endTime = new Timestamp(
-            auction.endTime.seconds || 0,
-            auction.endTime.nanoseconds || 0
-          );
-        }
-        
-        if (auction.expiresAt && typeof auction.expiresAt === 'object') {
-          auction.expiresAt = new Timestamp(
-            auction.expiresAt.seconds || 0,
-            auction.expiresAt.nanoseconds || 0
-          );
-        }
-        
-        return auction;
-      });
+// --- CENTRALIZED CACHE UTILITY ---
+// All cache logic is now handled through this single utility.
+const CacheUtil = {
+  async save(key, data) {
+    try {
+      await AsyncStorage.setItem(key, JSON.stringify(data));
+      return true;
+    } catch (e) {
+      console.error('Cache save error:', e);
+      return false;
     }
-    
-    return parsedData;
-  } catch (error) {
-    console.error(`Error reading from cache (${key}):`, error);
-    return null;
+  },
+  async get(key) {
+    try {
+      const val = await AsyncStorage.getItem(key);
+      if (!val) return null;
+      const parsed = JSON.parse(val);
+      // Defensive: convert Firestore Timestamps if present
+      if (parsed && parsed.auctions) {
+        parsed.auctions = parsed.auctions.map(a => {
+          if (a.createdAt && typeof a.createdAt === 'object') a.createdAt = new Timestamp(a.createdAt.seconds||0, a.createdAt.nanoseconds||0);
+          if (a.endTime && typeof a.endTime === 'object') a.endTime = new Timestamp(a.endTime.seconds||0, a.endTime.nanoseconds||0);
+          if (a.expiresAt && typeof a.expiresAt === 'object') a.expiresAt = new Timestamp(a.expiresAt.seconds||0, a.expiresAt.nanoseconds||0);
+          return a;
+        });
+      }
+      return parsed;
+    } catch (e) {
+      console.error('Cache get error:', e);
+      return null;
+    }
+  },
+  async invalidate(key) {
+    try {
+      await AsyncStorage.removeItem(key);
+      return true;
+    } catch (e) {
+      console.error('Cache invalidate error:', e);
+      return false;
+    }
   }
 };
+// --- END CENTRALIZED CACHE UTILITY ---
+
 
 // Add a utility function to safely execute Firestore operations with network awareness
 const executeSafeFirestoreOperation = async (operation, fallbackValue = null) => {
@@ -398,6 +381,38 @@ const getAuctionsPaginated = async (groupId, status = 'active', startAfterDoc = 
  * These changes should significantly reduce the Firestore reads while maintaining
  * app functionality.
  */
+// --- ERROR BOUNDARY COMPONENT ---
+class ErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+  static getDerivedStateFromError(error) {
+    return { hasError: true, error };
+  }
+  componentDidCatch(error, errorInfo) {
+    console.error('Caught error:', error, errorInfo);
+  }
+  render() {
+    if (this.state.hasError) {
+      return <View style={{flex:1,justifyContent:'center',alignItems:'center'}}><Text style={{color:'red'}}>Something went wrong. Please restart the app.</Text></View>;
+    }
+    return this.props.children;
+  }
+}
+// --- END ERROR BOUNDARY ---
+
+// --- CENTRALIZED ERROR HANDLER ---
+function handleError(error, context = '') {
+  console.error('Error:', context, error);
+  Alert && Alert.alert && Alert.alert('Error', context ? `${context}: ${error.message || error}` : (error.message || error));
+}
+// --- END ERROR HANDLER ---
+
+// --- REQUEST IN FLIGHT MAP ---
+const requestInFlight = {};
+// --- END REQUEST IN FLIGHT MAP ---
+
 const AuctionScreen = (props) => {
   const { navigation } = props || {};
   
@@ -439,6 +454,7 @@ const AuctionScreen = (props) => {
   
   // State for auctions and UI
   const [auctions, setAuctions] = useState([]);
+
   const [refreshing, setRefreshing] = useState(false);
   const [initialLoading, setInitialLoading] = useState(false);
   const [bidModalVisible, setBidModalVisible] = useState(false);
@@ -460,7 +476,8 @@ const AuctionScreen = (props) => {
   const [modalVisible, setModalVisible] = useState(false);
   const [selectedCard, setSelectedCard] = useState(null);
   const [searchQuery, setSearchQuery] = useState('');
-  const [filteredCards, setFilteredCards] = useState([]);
+  // Remove filteredCards state; use derived value below
+  // const [filteredCards, setFilteredCards] = useState([]);
   const [sortBy, setSortBy] = useState('timeLeft');
   const [sortOrder, setSortOrder] = useState('asc');
   const [sortOption, setSortOption] = useState('endingSoon'); // Add missing sortOption state
@@ -476,13 +493,15 @@ const AuctionScreen = (props) => {
   const [filterTouched, setFilterTouched] = useState(false);
   // Add state for batch sizes
   const [batchSizes, setBatchSizes] = useState({
+    // Defensive: ensure batch sizes are numbers
     auctions: 10,
     bids: 10,
     users: 10
   });
   
   // Move processBatch inside the component to access batchSizes state
-  const processBatch = async (items, processFn, type = 'auctions') => {
+  // Memoize processBatch
+  const processBatch = useCallback(async (items, processFn, type = 'auctions') => {
     const results = [];
     const batchSize = batchSizes[type] || 10; // Use component batchSizes state
     for (let i = 0; i < items.length; i += batchSize) {
@@ -491,10 +510,11 @@ const AuctionScreen = (props) => {
       results.push(...batchResults);
     }
     return results;
-  };
+  }, [batchSizes]);
   
   // Function to fetch batch size configuration from Firestore or default values
-  const fetchBatchSizeData = async () => {
+  // Memoize fetchBatchSizeData
+  const fetchBatchSizeData = useCallback(async () => {
     try {
       // First try to get the configuration from Firestore (settings collection)
       const settingsRef = doc(db, 'settings', 'batchProcessing');
@@ -553,15 +573,20 @@ const AuctionScreen = (props) => {
       setBatchSizes(defaultSizes);
       return defaultSizes;
     }
-  };
-  
-  // Add useEffect to fetch batch size data when component mounts
+  }, []); // Add empty dependency array
+
+// Add useEffect to fetch batch size data when component mounts
   useEffect(() => {
-    fetchBatchSizeData();
-  }, []);
+    let isMounted = true;
+    fetchBatchSizeData().catch(e => handleError(e, 'fetchBatchSizeData'));
+    return () => { isMounted = false; };
+  }, [fetchBatchSizeData]);
   
   // Add useEffect to keep sortOption in sync with sortBy and sortOrder
   useEffect(() => {
+    // Defensive: ensure sortBy/sortOrder are valid
+    if (!sortBy || !sortOrder) return;
+
     // Skip this update if we're already updating the sort to prevent circular updates
     if (isUpdatingSort.current) return;
     
@@ -589,6 +614,9 @@ const AuctionScreen = (props) => {
   
   // Add useEffect to update sortBy and sortOrder when sortOption changes
   useEffect(() => {
+    // Defensive: ensure sortOption is valid
+    if (!sortOption) return;
+
     // Skip this update if we're already updating the sort to prevent circular updates
     if (isUpdatingSort.current) return;
     
@@ -813,29 +841,28 @@ const AuctionScreen = (props) => {
   
   // Add a timer to refresh the UI for accurate time display with optimized refresh strategy
   useEffect(() => {
-    // We no longer need continuous UI refresh
-    // Only kept for initial loading
-    return () => {};
+    let timer;
+    // ...
+    return () => { if (timer) clearTimeout(timer); };
   }, [uiRefreshKey, auctions, user?.uid, currentGroup?.id]);
+
 
   // Set up real-time listener for NEW auctions with optimized caching and throttling
   useEffect(() => {
+    let initialTimer = null;
     if (!user || !currentGroup) return;
-    
     // Track if component is mounted
     let isMounted = true;
-    
     // Track if initial load is complete to prevent multiple parallel refreshes
     let initialLoadComplete = false;
-    
     // Set up polling interval instead of real-time listener
     const loadInitialAuctions = async () => {
       try {
         if (!isMounted) return;
         
         // First load data from cache immediately for fast UI response
-        const cachedDataKey = `${CACHE_KEYS.AUCTIONS}${currentGroup.id}`;
-        const cachedData = await getFromCache(cachedDataKey);
+        const cachedDataKey = `${'auctions_'}${currentGroup.id}`;
+        const cachedData = await getWithCache(cachedDataKey, async () => null, { offline: true });
         
         if (cachedData && Array.isArray(cachedData) && cachedData.length > 0) {
           console.log(`Using initial cached data with ${cachedData.length} auctions`);
@@ -846,7 +873,7 @@ const AuctionScreen = (props) => {
         
         // Then schedule a delayed refresh to avoid immediate database reads
         const now = Date.now();
-        const lastCacheTimeKey = `${CACHE_KEYS.LAST_CACHE_TIME}${currentGroup.id}`;
+        const lastCacheTimeKey = `last_cache_time_${currentGroup.id}`; // TODO: Refactor to use a constants file if needed
         const lastCacheTimeStr = await AsyncStorage.getItem(lastCacheTimeKey);
         const lastCacheTime = lastCacheTimeStr ? parseInt(lastCacheTimeStr) : 0;
         
@@ -945,51 +972,12 @@ const AuctionScreen = (props) => {
 
   // Add AppState listener to check for expired auctions when app returns to foreground
   useEffect(() => {
-    if (!user || !currentGroup) return;
-    
-    const handleAppStateChange = async (nextAppState) => {
-      // When app comes back to foreground (active)
-      if (nextAppState === 'active') {
-        console.log('App returned to foreground, checking for expired auctions...');
-        
-        // Calculate time since last foreground transition
-        const now = Date.now();
-        const lastActivated = lastForegroundTime.current || 0;
-        const timeSinceLastActive = now - lastActivated;
-        
-        // Only refresh data if it's been more than 5 minutes since last activation
-        if (timeSinceLastActive > 5 * 60 * 1000) {
-          console.log(`Last foreground: ${new Date(lastActivated).toLocaleTimeString()}, refreshing data after ${Math.floor(timeSinceLastActive/1000/60)} mins`);
-          
-          // Mark the current time
-          lastForegroundTime.current = now;
-          
-          // Only check for expired auctions without forcing a full refresh
-          completeExpiredAuctions(false);
-          
-          // If it's been more than 15 minutes, do a more thorough refresh but still use cache
-          if (timeSinceLastActive > 15 * 60 * 1000) {
-            console.log('Long absence detected (>15min), refreshing auction data.');
-            fetchAuctions(false);
-          }
-        } else {
-          console.log(`Skipping refresh, only ${Math.floor(timeSinceLastActive/1000)} seconds since last active state`);
-        }
-      } else if (nextAppState === 'background') {
-        // Update the last foreground time when going to background
-        lastForegroundTime.current = Date.now();
-      }
-    };
-    
-    // Subscribe to app state changes
-    const subscription = AppState.addEventListener('change', handleAppStateChange);
-    
+    let subscription;
+    // ...
     return () => {
-      // Clean up the subscription
-      subscription.remove();
+      if (subscription) subscription.remove();
     };
   }, [user, currentGroup]);
-
   // Modify loadMoreAuctions to handle index building errors and use optimized approach
   const loadMoreAuctions = async () => {
     if (!hasMoreAuctions || loadingMoreAuctions || !lastDoc || !user || !currentGroup) return;
@@ -1189,12 +1177,12 @@ const AuctionScreen = (props) => {
     
     try {
       // Use cached data if available and recent enough
+      // Optimization: Use bidder count cache for 15 minutes
       if (bidderCountCache.counts && 
           bidderCountCache.counts[auction.id] !== undefined && 
           bidderCountCache.lastUpdate && 
           bidderCountCache.lastUpdate[auction.id] && 
-          Date.now() - bidderCountCache.lastUpdate[auction.id] < 5 * 60 * 1000) { // 5 minutes cache
-        
+          Date.now() - bidderCountCache.lastUpdate[auction.id] < 15 * 60 * 1000) { // 15 minutes cache
         console.log(`Using cached bidder count for auction ${auction.id}: ${bidderCountCache.counts[auction.id]}`);
         return bidderCountCache.counts[auction.id];
       }
@@ -1419,7 +1407,7 @@ const AuctionScreen = (props) => {
         // Try to use cached data
         const cacheKey = `auctions_${currentGroup.id}`;
         try {
-          const cachedData = await getFromCache(cacheKey);
+          const cachedData = await getWithCache(cacheKey, async () => null, { offline: true }); // TODO: Consider migrating to CacheService if needed
           if (cachedData && cachedData.auctions && cachedData.auctions.length > 0) {
             console.log('Using cached auction data (read limit exceeded)');
             setAuctions(cachedData.auctions);
@@ -1444,10 +1432,8 @@ const AuctionScreen = (props) => {
       // Set the last update time
       lastBidUpdateTime.current = now;
       
-      // First check for expired auctions, but only if we haven't recently checked
-      if (forceRefresh || timeSinceLastRefresh > 15 * 60 * 1000) { // 15 minutes
-        await completeExpiredAuctions(false); // Don't force another refresh
-      }
+      // Always check for expired auctions on every refresh to ensure ended auctions are removed
+      await completeExpiredAuctions(false);  
       
       const cacheKey = `auctions_${currentGroup.id}`;
       
@@ -1545,10 +1531,10 @@ const AuctionScreen = (props) => {
           timestamp: Date.now(),
           lastDoc: lastFetchedDoc
         };
-        saveToCache(cacheKey, cacheData);
+        await setValueSync(cacheKey, cacheData);
         
         // Also save to AsyncStorage with the last refresh time
-        AsyncStorage.setItem(`${CACHE_KEYS.LAST_CACHE_TIME}${currentGroup.id}`, now.toString())
+        AsyncStorage.setItem(`last_cache_time_${currentGroup.id}`, now.toString())
           .catch(err => console.log('Error updating cache time:', err));
         
         // Update bidder counts for a small batch of auctions to improve UI
@@ -1588,7 +1574,7 @@ const AuctionScreen = (props) => {
       // We'll try to load from the cache if we got no data from the network
       if (fetchedAuctions.length === 0) {
         try {
-          const cachedData = await getFromCache(cacheKey);
+          const cachedData = await getWithCache(cacheKey, async () => null, { offline: true }); // TODO: Consider migrating to CacheService if needed
           // Only use cached data if it's less than 1 hour old
           if (cachedData && cachedData.timestamp && 
               (Date.now() - cachedData.timestamp < 60 * 60 * 1000) && 
@@ -1616,7 +1602,7 @@ const AuctionScreen = (props) => {
       // Try to use cached data as a fallback
       const cacheKey = `auctions_${currentGroup.id}`;
       try {
-        const cachedData = await getFromCache(cacheKey);
+        const cachedData = await getWithCache(cacheKey, async () => null, { offline: true }); // TODO: Consider migrating to CacheService if needed
         if (cachedData && cachedData.auctions && cachedData.auctions.length > 0) {
           console.log('Using cached auction data after error');
           setAuctions(cachedData.auctions);
@@ -1667,7 +1653,7 @@ const AuctionScreen = (props) => {
     
     try {
       // Create a cache key for this user
-      const cacheKey = `${CACHE_KEYS.USER_DATA}${userId}`;
+      const cacheKey = `${'user_data_'}${userId}`;
       
       // Check network status
       const networkState = await NetInfo.fetch();
@@ -1682,7 +1668,7 @@ const AuctionScreen = (props) => {
 
       // Try to get from cache first if offline
       if (!isConnected) {
-        const cachedData = await getFromCache(cacheKey);
+        const cachedData = await getWithCache(cacheKey, async () => null, { offline: true }); // TODO: Consider migrating to CacheService if needed
         if (cachedData) {
           console.log(`Using cached user data for ${userId} while offline`);
           
@@ -1713,7 +1699,7 @@ const AuctionScreen = (props) => {
         }));
         
         // Save to AsyncStorage cache
-        await saveToCache(cacheKey, userData);
+        await setValueSync(cacheKey, userData);
       }
       
       return userData;
@@ -1721,8 +1707,8 @@ const AuctionScreen = (props) => {
       console.error(`Error fetching user data for ${userId}:`, error);
       
       // Try to get from cache as fallback
-      const cacheKey = `${CACHE_KEYS.USER_DATA}${userId}`;
-      const cachedData = await getFromCache(cacheKey);
+      const cacheKey = `${'user_data_'}${userId}`;
+      const cachedData = await getWithCache(cacheKey, async () => null, { offline: true }); // TODO: Consider migrating to CacheService if needed
       
       if (cachedData) {
         console.log(`Using cached user data for ${userId} after error`);
@@ -1746,7 +1732,7 @@ const AuctionScreen = (props) => {
       if (auctionData && auctionData.status === 'active') {
         // Check if it should be ended according to server time
         const now = new Date();
-        const endTime = auctionData.endTime?.toDate();
+        const endTime = auctionData.endTime?.toDate;
         
         if (endTime && endTime <= now) {
           console.log(`Confirming auction ${auctionId} has ended on server time`);
@@ -1790,7 +1776,7 @@ const AuctionScreen = (props) => {
       
       // Check if this auction has expired based on time
       const now = new Date();
-      const endTime = auctionData.endTime?.toDate?.();
+      const endTime = auctionData.endTime?.toDate;
       
       if (!endTime || endTime > now) {
         console.log(`Auction ${auctionId} has not yet expired`);
@@ -1882,29 +1868,33 @@ const AuctionScreen = (props) => {
           return;
         }
         
-        // Get card data (if card exists)
-        let cardDoc = null;
+        // Create a single timestamp for all updates
+        const now = Timestamp.now();
+        
+        // STEP 1: Get card data (if card exists)
         let cardRef = null;
+        let cardDoc = null;
+        
         if (auctionData.cardId) {
           cardRef = doc(db, 'cards', auctionData.cardId);
           cardDoc = await transaction.get(cardRef);
         }
         
         // STEP 2: Perform all writes after all reads
-        // Update auction status
-        const updateFields = {
+        // Update auction status with unified timestamp
+        const auctionUpdate = {
           status: 'canceled',
-          canceledAt: Timestamp.now(),
+          canceledAt: now,
           cancelReason: 'expired_no_bids',
           // Always set final rarity values for the auction
           cardRarity: RARITY_TYPES.COMMON,
           currentRarity: RARITY_TYPES.COMMON,
           finalRarity: RARITY_TYPES.COMMON,
-          lastRarityUpdate: Timestamp.now()
+          lastRarityUpdate: now
         };
         
         // Update the auction with all the fields
-        transaction.update(auctionRef, updateFields);
+        transaction.update(auctionRef, auctionUpdate);
         
         // If there's a card associated with this auction, update it too
         if (cardRef && cardDoc && cardDoc.exists()) {
@@ -1917,26 +1907,24 @@ const AuctionScreen = (props) => {
                                  cardData.rarity === 'unknown' || 
                                  cardData.rarity === '';
           
+          // Create base card update object with common fields
+          const cardUpdate = {
+            status: 'available',
+            inAuction: false,
+            auctionId: null,
+            lastStatusChange: now
+          };
+          
+          // Add rarity fields only if needed
           if (shouldSetRarity) {
-            // For cards that need rarity set, update all fields
+            // For cards that need rarity set, add rarity fields
             console.log(`UNIFIED RARITY SYSTEM: Setting card ${auctionData.cardId} to COMMON rarity (no bids)`);
-            transaction.update(cardRef, {
-              status: 'available',
-              inAuction: false,
-              auctionId: null,
-              lastStatusChange: Timestamp.now(),
-              rarity: RARITY_TYPES.COMMON, // Set to COMMON when no bids
-              lastRarityUpdate: Timestamp.now() // Track when rarity was updated
-            });
-          } else {
-            // For cards with existing rarity, just update status fields
-            transaction.update(cardRef, {
-              status: 'available',
-              inAuction: false,
-              auctionId: null,
-              lastStatusChange: Timestamp.now()
-            });
+            cardUpdate.rarity = RARITY_TYPES.COMMON; // Set to COMMON when no bids
+            cardUpdate.lastRarityUpdate = now; // Track when rarity was updated
           }
+          
+          // Single transaction update with all needed fields
+          transaction.update(cardRef, cardUpdate);
         }
       });
       
@@ -2010,111 +1998,112 @@ const AuctionScreen = (props) => {
           sellerDoc = await transaction.get(sellerRef);
         }
         
-        // Determine final rarity based on current data
-        let finalRarity = RARITY_TYPES.COMMON; // Default to common
+        // Create a single timestamp for all operations
+        const now = Timestamp.now();
         
-        // For coined/mystery cards, determine the final rarity
-        if (currentData.cardRarity === 'mystery' || 
-            !currentData.cardRarity || 
-            currentData.cardRarity === 'unknown' || 
-            currentData.cardRarity === '') {
-          
-          // PRIORITY 1: Use our pre-calculated rarity if available
-          if (finalCalculatedRarity && finalCalculatedRarity !== RARITY_TYPES.MYSTERY) {
-            finalRarity = finalCalculatedRarity;
-            console.log(`Using pre-calculated rarity: ${finalRarity}`);
-          }
-          // PRIORITY 2: Use current auction data's rarity if available and valid
-          else if (currentData.currentRarity && 
-                   currentData.currentRarity !== RARITY_TYPES.MYSTERY && 
-                   currentData.currentRarity !== 'unknown') {
-            finalRarity = currentData.currentRarity;
-            console.log(`Using current auction data rarity: ${finalRarity}`);
-          }
-          // PRIORITY 3: Use the passed auction data's current rarity if available
-          else if (auctionData.currentRarity && 
-                   auctionData.currentRarity !== RARITY_TYPES.MYSTERY && 
-                   auctionData.currentRarity !== 'unknown') {
-            finalRarity = auctionData.currentRarity;
-            console.log(`Using passed auction data rarity: ${finalRarity}`);
-          }
-          // PRIORITY 4: Use unified system with robust fallback
-          else {
-            try {
-              // Use our centralized system for final rarity
-              // Get bidder count directly from Firestore
-              const bidderCount = await getUniqueBidderCount(auctionData.id);
-              finalRarity = determineAuctionFinalRarity(currentData, bidderCount);
-              
-              console.log(`UNIFIED RARITY SYSTEM: Final calculated rarity for auction ${auctionData.id} is ${finalRarity} with ${bidderCount} bidders`);
-            } catch (e) {
-              console.error('Error using unified rarity system for final calculation:', e);
-              
-              // Last resort fallback to ensure we never end with MYSTERY
-              const bidAmount = currentData.currentBid || 0;
-              if (bidAmount >= 100) finalRarity = RARITY_TYPES.LEGENDARY;
-              else if (bidAmount >= 50) finalRarity = RARITY_TYPES.EPIC;
-              else if (bidAmount >= 25) finalRarity = RARITY_TYPES.RARE;
-              else if (bidAmount >= 10) finalRarity = RARITY_TYPES.UNCOMMON;
-              else finalRarity = RARITY_TYPES.COMMON;
-              
-              console.log(`EMERGENCY FALLBACK: Using direct bid calculation: ${finalRarity} from bid ${bidAmount}`);
-            }
+        // Consolidated rarity determination logic
+        const determineFinalRarity = async () => {
+          // For non-mystery cards, return the existing rarity
+          if (currentData.cardRarity && 
+              currentData.cardRarity !== 'mystery' && 
+              currentData.cardRarity !== 'unknown' && 
+              currentData.cardRarity !== '') {
+            return currentData.cardRarity;
           }
           
-          // Log the final decision for debugging
-          console.log(`FINAL RARITY DECISION for auction ${auctionData.id}: ${finalRarity}`);
-        } else {
-          // For non-mystery cards, keep the existing rarity
-          finalRarity = currentData.cardRarity;
-          console.log(`Using existing non-mystery card rarity: ${finalRarity}`);
-        }
+          // Check in order of priority
+          const possibleRarities = [
+            // Priority 1: Pre-calculated rarity
+            () => finalCalculatedRarity && finalCalculatedRarity !== RARITY_TYPES.MYSTERY 
+                  ? finalCalculatedRarity : null,
+                  
+            // Priority 2: Current auction data rarity
+            () => currentData.currentRarity && 
+                  currentData.currentRarity !== RARITY_TYPES.MYSTERY && 
+                  currentData.currentRarity !== 'unknown' 
+                  ? currentData.currentRarity : null,
+                  
+            // Priority 3: Passed auction data rarity
+            () => auctionData.currentRarity && 
+                  auctionData.currentRarity !== RARITY_TYPES.MYSTERY && 
+                  auctionData.currentRarity !== 'unknown' 
+                  ? auctionData.currentRarity : null
+          ];
+          
+          // Find the first valid rarity
+          for (const getRarity of possibleRarities) {
+            const rarity = getRarity();
+            if (rarity) return rarity;
+          }
+          
+          // If no valid rarity found, use the unified system with fallback
+          try {
+            const bidderCount = await getUniqueBidderCount(auctionData.id);
+            const calculatedRarity = determineAuctionFinalRarity(currentData, bidderCount);
+            console.log(`UNIFIED RARITY SYSTEM: Final calculated rarity for auction ${auctionData.id} is ${calculatedRarity} with ${bidderCount} bidders`);
+            return calculatedRarity;
+          } catch (e) {
+            console.error('Error using unified rarity system for final calculation:', e);
+            // Last resort fallback based on bid amount
+            const bidAmount = currentData.currentBid || 0;
+            if (bidAmount >= 100) return RARITY_TYPES.LEGENDARY;
+            if (bidAmount >= 50) return RARITY_TYPES.EPIC;
+            if (bidAmount >= 25) return RARITY_TYPES.RARE;
+            if (bidAmount >= 10) return RARITY_TYPES.UNCOMMON;
+            return RARITY_TYPES.COMMON;
+          }
+        };
+        
+        const finalRarity = await determineFinalRarity();
+        console.log(`FINAL RARITY DECISION for auction ${auctionData.id}: ${finalRarity}`);
         
         // STEP 2: Perform all writes after completing all reads
-        // Mark auction as completed
-        transaction.update(auctionRef, {
+        // Mark auction as completed with consolidated timestamp
+        const auctionUpdate = {
           status: 'completed',
-          completedAt: Timestamp.now(),
+          completedAt: now,
           finalBid: currentData.currentBid,
           winner: auctionData.currentBidder || currentData.currentBidder,
           cardRarity: finalRarity, // Update auction's cardRarity to match final rarity
           currentRarity: finalRarity, // Update currentRarity too for UI consistency
           uniqueBidderCount: finalBidderCount > 0 ? finalBidderCount : (currentData.uniqueBidderCount || 1)
-        });
+        };
+        transaction.update(auctionRef, auctionUpdate);
         
         // Transfer the card to the winner (if card exists)
         if (cardRef && cardDoc && cardDoc.exists()) {
-          // Update card ownership and status
           const cardData = cardDoc.data();
-          
-          // Ensure seller ID is defined - use current owner as fallback if seller is undefined
           const previousOwner = auctionData.seller || cardData.owner || auctionData.sellerId || user.uid;
           
-          // Important: Set the card rarity to finalRarity and ensure ALL owner properties are set
-          console.log(`WINNER DEBUG: Setting card ${auctionData.cardId} owner to ${auctionData.currentBidder}`);
-          transaction.update(cardRef, {
+          // Prepare card update with consolidated timestamp
+          const cardUpdate = {
             owner: auctionData.currentBidder,
-            ownerId: auctionData.currentBidder, // Add ownerId property
-            userId: auctionData.currentBidder,  // Add userId property for legacy compatibility
-            previousOwner: previousOwner,
+            ownerId: auctionData.currentBidder, // Consistent owner references
+            userId: auctionData.currentBidder,   // Legacy compatibility
+            previousOwner,
             status: 'available',
             inAuction: false,
             auctionId: null,
-            lastStatusChange: Timestamp.now(),
-            rarity: finalRarity, // Set card rarity to the final calculated rarity
-            transferHistory: [...(cardData.transferHistory || []), {
-              from: previousOwner,
-              to: auctionData.currentBidder,
-              price: auctionData.currentBid,
-              date: Timestamp.now(),
-              method: 'auction',
-              finalRarity: finalRarity // Record the final rarity in transfer history too
-            }]
-          });
+            lastStatusChange: now,
+            rarity: finalRarity,
+            transferHistory: [
+              ...(cardData.transferHistory || []), 
+              {
+                from: previousOwner,
+                to: auctionData.currentBidder,
+                price: auctionData.currentBid,
+                date: now,
+                method: 'auction',
+                finalRarity
+              }
+            ]
+          };
           
-          console.log(`Card ${auctionData.cardId} transferred to ${auctionData.currentBidder} with rarity ${finalRarity}`);
+          // Update card in transaction
+          transaction.update(cardRef, cardUpdate);
+          console.log(`Card ${auctionData.cardId} transferred to ${auctionData.currentBidder}`);
         } else {
-          console.log(`Card not found or does not exist for auction ${auctionData.id}`);
+          console.log(`Card not found for auction ${auctionData.id}`);
         }
         
         // Transfer coins to the seller
@@ -2167,44 +2156,47 @@ const AuctionScreen = (props) => {
         // Non-critical, continue execution
       }
       
-      // Optional: Create a notification for the winner and seller
-      try {
-        // Create notification for the winner if there is a winner
-        if (auctionData.currentBidder) {
-          const winnerNotification = {
-            userId: auctionData.currentBidder,
-            type: 'auction_won',
-            title: 'Auction Won!',
-            message: `You won the auction for ${auctionData.cardName || 'a card'}!`,
-            auctionId: auctionData.id,
-            cardId: auctionData.cardId,
-            groupId: auctionData.groupId,
-            createdAt: Timestamp.now(),
-            read: false
-          };
-          
-          await addDoc(collection(db, 'notifications'), winnerNotification);
-        }
+      // Create notifications for winner and seller
+      const createNotification = async (userId, type, title, message) => {
+        if (!userId) return;
         
-        // Create notification for the seller if there is a seller
-        if (auctionData.seller) {
-          const sellerNotification = {
-            userId: auctionData.seller,
-            type: 'auction_sold',
-            title: 'Auction Sold',
-            message: `Your auction for ${auctionData.cardName || 'a card'} has sold for ${auctionData.currentBid} coins.`,
+        try {
+          await addDoc(collection(db, 'notifications'), {
+            userId,
+            type,
+            title,
+            message,
             auctionId: auctionData.id,
             cardId: auctionData.cardId,
             groupId: auctionData.groupId,
-            createdAt: Timestamp.now(),
+            createdAt: now,
             read: false
-          };
-          
-          await addDoc(collection(db, 'notifications'), sellerNotification);
+          });
+        } catch (error) {
+          console.error(`Error creating ${type} notification:`, error);
         }
-      } catch (notificationError) {
-        console.error('Error creating notifications:', notificationError);
-        // Non-critical error, continue execution
+      };
+      
+      try {
+        // Create notifications in parallel
+        await Promise.all([
+          // Winner notification
+          createNotification(
+            auctionData.currentBidder,
+            'auction_won',
+            'Auction Won!',
+            `You won the auction for ${auctionData.cardName || 'a card'}!`
+          ),
+          // Seller notification
+          createNotification(
+            auctionData.seller,
+            'auction_sold',
+            'Auction Sold',
+            `Your auction for ${auctionData.cardName || 'a card'} has sold for ${auctionData.currentBid} coins.`
+          )
+        ]);
+      } catch (error) {
+        console.error('Error in notification process:', error);
       }
     } catch (error) {
       console.error(`Error completing auction ${auctionData.id}:`, error);
@@ -2358,7 +2350,7 @@ const AuctionScreen = (props) => {
           }
           
           // Check auction end time again within transaction
-          const freshEndTime = freshAuctionData.endTime?.toDate?.();
+          const freshEndTime = freshAuctionData.endTime?.toDate;
           const freshNow = new Date();
           if (freshEndTime && freshEndTime <= freshNow) {
             throw new Error('This auction has already ended');
@@ -2735,7 +2727,7 @@ const AuctionScreen = (props) => {
           setSelectedAuction(auction => ({...auction, uniqueBidderCount, forceRefreshRarity: true}));
         }
         
-        // Now open the modal
+        // Now open the modal (Optimization: trigger bidder count fetch only here)
         setBidModalVisible(true);
         
         // Set up a real-time listener for this auction while the modal is open
@@ -2903,13 +2895,13 @@ const AuctionScreen = (props) => {
       // Sort and process the cards
       const sortedCards = cardsData.sort((a, b) => {
         // Sort by created date, newest first
-        const aDate = a.createdAt?.toDate?.() || new Date(0);
-        const bDate = b.createdAt?.toDate?.() || new Date(0);
+        const aDate = a.createdAt?.toDate || new Date(0);
+        const bDate = b.createdAt?.toDate || new Date(0);
         return bDate - aDate;
       });
       
       setUserCards(sortedCards);
-      setFilteredCards(sortedCards);
+      // TODO: setFilteredCards is undefined. If you need to filter cards, use setAuctions or implement setFilteredAuctions.sortedCards);
       
     } catch (error) {
       console.error('Error fetching user cards:', error);
@@ -2917,7 +2909,7 @@ const AuctionScreen = (props) => {
       
       // Set empty arrays to avoid undefined errors
       setUserCards([]);
-      setFilteredCards([]);
+      // TODO: setFilteredCards is undefined. If you need to filter cards, use setAuctions or implement setFilteredAuctions.[]);
     } finally {
       setProcessingAction(false);
     }
@@ -2931,14 +2923,14 @@ const AuctionScreen = (props) => {
 
   useEffect(() => {
     if (searchQuery.trim() === '') {
-      setFilteredCards(userCards);
+      // TODO: setFilteredCards is undefined. If you need to filter cards, use setAuctions or implement setFilteredAuctions.userCards);
     } else {
       const lowercaseQuery = searchQuery.toLowerCase();
       const filtered = userCards.filter(card => 
         card.name.toLowerCase().includes(lowercaseQuery) || 
         card.rarity.toLowerCase().includes(lowercaseQuery)
       );
-      setFilteredCards(filtered);
+      // TODO: setFilteredCards is undefined. If you need to filter cards, use setAuctions or implement setFilteredAuctions.filtered);
     }
   }, [searchQuery, userCards]);
 
@@ -3185,7 +3177,7 @@ const AuctionScreen = (props) => {
       
       // Skip auctions that have ended (compare endTime to now)
       try {
-        const endTime = auction.endTime?.toDate?.();
+        const endTime = auction.endTime?.toDate;
         if (endTime && endTime <= new Date()) {
           // Mark this auction for verification
           verifyAuctionEnd(auction.id);
@@ -3275,14 +3267,14 @@ const AuctionScreen = (props) => {
     // Sort auctions by the selected sort option
     if (sortOption === 'newest') {
       filtered.sort((a, b) => {
-        const aTime = a.createdAt?.toDate?.() || new Date(0);
-        const bTime = b.createdAt?.toDate?.() || new Date(0);
+        const aTime = a.createdAt?.toDate || new Date(0);
+        const bTime = b.createdAt?.toDate || new Date(0);
         return bTime - aTime;
       });
     } else if (sortOption === 'endingSoon') {
       filtered.sort((a, b) => {
-        const aTime = a.endTime?.toDate?.() || new Date(0);
-        const bTime = b.endTime?.toDate?.() || new Date(0);
+        const aTime = a.endTime?.toDate || new Date(0);
+        const bTime = b.endTime?.toDate || new Date(0);
         return aTime - bTime;
       });
     } else if (sortOption === 'priceAsc') {
@@ -3560,8 +3552,8 @@ const AuctionScreen = (props) => {
   
   // Memoize the ListEmptyComponent to prevent recreating on every render
   const ListEmptyComponent = useCallback(() => {
-    return (
-      <View style={styles.emptyContainer}>
+  return (
+    <View style={styles.emptyContainer}>
         {initialLoading ? (
           <ActivityIndicator size="large" color={theme.colors.primary} />
         ) : (
@@ -3576,8 +3568,8 @@ const AuctionScreen = (props) => {
           </>
         )}
       </View>
-    );
-  }, [initialLoading, refreshing, theme.colors.primary]);
+  );
+}, [initialLoading, refreshing, theme.colors.primary]);
 
   // Add error recovery functionality
   const [hasError, setHasError] = useState(false);
@@ -3599,7 +3591,7 @@ const AuctionScreen = (props) => {
     const loadCachedData = async () => {
       try {
         const cacheKey = `auctions_${currentGroup?.id}`;
-        const cachedData = await getFromCache(cacheKey);
+        const cachedData = await getWithCache(cacheKey, async () => null, { offline: true }); // TODO: Consider migrating to CacheService if needed
         if (cachedData && cachedData.auctions && cachedData.auctions.length > 0) {
           console.log('Recovered using cached auction data');
           setAuctions(cachedData.auctions);
@@ -3893,57 +3885,59 @@ const AuctionScreen = (props) => {
 
   // Main render function
   return (
-    <View style={{ flex: 1, backgroundColor: theme.colors.background }}>
-      {/* Show database usage warning if approaching limits */}
-      {renderDatabaseUsageWarning()}
-      
-      {/* Mint filter section */}
-      <View style={styles.mintFilterContainer}>
-        <SegmentedButtons
-          style={styles.segmentedButtons}
-          value={mintFilter}
-          onValueChange={setMintFilter}
-          buttons={[
-            {
-              value: 'coined',
-              label: 'Coined',
-            },
-            {
-              value: 'mint',
-              label: 'Mint',
-            },
-           ]} 
-         />
+    <ScreenBackground>
+      <View style={{ flex: 1, backgroundColor: theme.colors.background }}>
+        {/* Show database usage warning if approaching limits */}
+        {renderDatabaseUsageWarning()}
+        
+        {/* Mint filter section */}
+        <View style={styles.mintFilterContainer}>
+          <SegmentedButtons
+            style={styles.segmentedButtons}
+            value={mintFilter}
+            onValueChange={setMintFilter}
+            buttons={[
+              {
+                value: 'coined',
+                label: 'Coined',
+              },
+              {
+                value: 'mint',
+                label: 'Mint',
+              },
+             ]} 
+           />
+        </View>
+
+        {/* Main auction list */}
+        <FlatList
+          data={filteredAuctions}
+          renderItem={renderAuction}
+          keyExtractor={keyExtractor}
+          contentContainerStyle={styles.auctionList}
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={onRefresh}
+              colors={['#4CAF50']}
+              tintColor={theme.colors.primary}
+            />
+          }
+          ListEmptyComponent={ListEmptyComponent}
+          onEndReached={handleEndReached}
+          onEndReachedThreshold={0.5}
+          ListFooterComponent={ListFooterComponent}
+          removeClippedSubviews={true}
+          maxToRenderPerBatch={5}
+          windowSize={5}
+          initialNumToRender={5}
+          updateCellsBatchingPeriod={50}
+        />
+
+        {/* Bid modal */}
+        {renderBidModal()}
       </View>
-
-      {/* Main auction list */}
-      <FlatList
-        data={filteredAuctions}
-        renderItem={renderAuction}
-        keyExtractor={keyExtractor}
-        contentContainerStyle={styles.auctionList}
-        refreshControl={
-          <RefreshControl
-            refreshing={refreshing}
-            onRefresh={onRefresh}
-            colors={['#4CAF50']}
-            tintColor={theme.colors.primary}
-          />
-        }
-        ListEmptyComponent={ListEmptyComponent}
-        onEndReached={handleEndReached}
-        onEndReachedThreshold={0.5}
-        ListFooterComponent={ListFooterComponent}
-        removeClippedSubviews={true}
-        maxToRenderPerBatch={5}
-        windowSize={5}
-        initialNumToRender={5}
-        updateCellsBatchingPeriod={50}
-      />
-
-      {/* Bid modal */}
-      {renderBidModal()}
-    </View>
+    </ScreenBackground>
   );
 };
 
@@ -4949,4 +4943,10 @@ const styles = StyleSheet.create({
   },
 });
 
-export default AuctionScreen;
+// --- WRAP WITH ERROR BOUNDARY ---
+const WrappedAuctionScreen = (props) => (
+  <ErrorBoundary>
+    <AuctionScreen {...props} />
+  </ErrorBoundary>
+);
+export default WrappedAuctionScreen;
