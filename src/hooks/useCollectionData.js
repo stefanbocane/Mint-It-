@@ -194,20 +194,26 @@ export const useCollectionData = () => {
               enrichedCards = await batchEnrichCardsWithOwners(cardsData);
             }
             
-            // Set enriched cards immediately for fast UI update
-            setCards(enrichedCards);
+            // Clean up temporary status/optimistic flags
+            const cleanedCards = enrichedCards.map(c => {
+              const { _optimistic, _rollback, _originalCurrentBid, _status, ...rest } = c;
+              return rest;
+            });
+
+            // Set cleaned cards immediately for fast UI update
+            setCards(cleanedCards);
             setLoading(false);
             setRefreshing(false);
             
             // Run status verification in background WITHOUT awaiting (non-blocking)
-            if (enrichedCards.length > 0) {
+            if (cleanedCards.length > 0) {
               // Use smart verification based on user activity
               const timeSinceLastActivity = Date.now() - lastUserActivity.current;
               const userIsActive = timeSinceLastActivity < COLLECTION_CONFIG.DATABASE.RECENT_TRANSFER_WINDOW;
               
               if (userIsActive) {
                 // Run in background without blocking UI
-                Promise.resolve().then(() => verifyAndCorrectStatus(enrichedCards)).catch(error => {
+                Promise.resolve().then(() => verifyAndCorrectStatus(cleanedCards)).catch(error => {
                   console.warn('⚠️ Background status verification failed:', error);
                 });
               } else {

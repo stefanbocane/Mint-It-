@@ -11,7 +11,7 @@ import { checkGroupMembershipLimit } from '../utils/cardLimits';
 
 const CreateGroupScreen = ({ navigation }) => {
   const { user } = useAuth();
-  const { refreshGroups, switchGroup } = useGroup();
+  const { refreshGroups, switchGroup, addGroup } = useGroup();
   const theme = useTheme();
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
@@ -75,6 +75,8 @@ const CreateGroupScreen = ({ navigation }) => {
         members: [user.uid],
         code: name.trim().toLowerCase()
       };
+      // Add to groups list immediately and switch
+      addGroup(newGroup);
       switchGroup(newGroup);
 
       navigation.goBack();

@@ -17,7 +17,7 @@ import OptimizedStatusVerificationService from '../services/OptimizedStatusVerif
 import UltraBatchService from '../services/UltraBatchService';
 import CacheService from '../services/caching/CacheService';
 import GlobalListenerCoordinator from '../utils/GlobalListenerCoordinator';
-import { calculateTimeRemaining } from '../utils/auctionTimerUtils';
+import { calculateTimeRemaining, getCorrectedNow } from '../utils/auctionTimerUtils';
 import EventManager from '../utils/eventManager';
 import PerformanceOptimizer from '../utils/performanceOptimizer';
 import { getBidderCount } from '../utils/smartBidderCountService';
@@ -179,10 +179,21 @@ export const useAuctionData = (options = {}) => {
             // Track this as a successful data fetch
             trackDatabaseRead('auction_listener_update');
             
-            // Set auctions immediately for fast UI update - NEVER block this
+            // Filter out ended or inactive auctions before updating
+            const now = getCorrectedNow();
+            const activeAuctions = auctionsData.filter(a => {
+              if (a.status && a.status !== 'active') return false;
+              if (a.endTime) {
+                const end = a.endTime.toDate ? a.endTime.toDate() : new Date(a.endTime.seconds*1000);
+                return end > now;
+              }
+              return true;
+            });
+            
+            // Set auctions immediately for fast UI update
             setState(prev => ({
               ...prev,
-              auctions: auctionsData,
+              auctions: activeAuctions,
               loading: false,
               refreshing: false,
               initialized: true,
@@ -190,11 +201,11 @@ export const useAuctionData = (options = {}) => {
             }));
             
             // Run status verification in background WITHOUT awaiting (non-blocking)
-            if (auctionsData.length > 0 && !isUserInactive()) {
+            if (activeAuctions.length > 0 && !isUserInactive()) {
               console.log('🔍 OPTIMIZED: Running background status verification for auctions');
               Promise.resolve().then(() => 
                 OptimizedStatusVerificationService.verifyRecentAuctionCompletions(
-                  auctionsData,
+                  activeAuctions,
                   { userActivity: 'active' }
                 )
               ).catch(error => {
