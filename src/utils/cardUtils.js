@@ -7,30 +7,9 @@
  * @param {Object} card - The card object
  * @returns {boolean} - Whether the card can be downloaded/owned
  */
-export const isCardDownloadable = (card) => {
-  if (!card) return false;
-  
-  // Cards with these statuses should not be downloadable/ownable
-  const restrictedStatuses = [
-    'marked',     // Status marked cards
-    'flagged',    // Flagged cards
-    'suspended',  // Suspended cards
-    'banned',     // Banned cards
-    'pending',    // Pending review
-    'locked'      // Locked cards
-  ];
-  
-  // Check if card has a restricted status
-  if (card.status && restrictedStatuses.includes(card.status.toLowerCase())) {
-    return false;
-  }
-  
-  // Check for additional flags that might restrict access
-  if (card.isMarked || card.isFlagged || card.isRestricted || card.isLocked) {
-    return false;
-  }
-  
-  return true;
+export const isCardDownloadable = (_card) => {
+  // Download functionality disabled globally
+  return false;
 };
 
 /**
