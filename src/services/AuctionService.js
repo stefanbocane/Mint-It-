@@ -27,6 +27,7 @@ import {
 } from 'firebase/firestore';
 import { db } from '../config/firebase';
 import { determineAuctionFinalRarity, RARITY_TYPES } from '../utils/auctionRarity';
+import { getCorrectedNow } from '../utils/auctionTimerUtils';
 import { PAGE_SIZE } from '../utils/auctionUtils';
 import { checkAuctionBiddingLimit } from '../utils/cardLimits';
 import AuctionCompletionService from './AuctionCompletionService';
@@ -785,9 +786,9 @@ class AuctionService {
             throw new Error(`Auction is ${auctionData.status}, not accepting bids`);
           }
 
-          // Check if auction has ended
+          // Check if auction has ended (use drift-corrected clock)
           const endTime = auctionData.endTime?.toDate ? auctionData.endTime.toDate() : auctionData.endTime;
-          if (endTime && endTime <= new Date()) {
+          if (endTime && endTime <= getCorrectedNow()) {
             throw new Error('Auction has ended');
           }
 

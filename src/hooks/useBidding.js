@@ -14,6 +14,7 @@ import { Alert } from 'react-native';
 import { useAuth } from '../contexts/AuthContext';
 import { useGroup } from '../contexts/GroupContext';
 import AuctionService from '../services/AuctionService';
+import { getCorrectedNow } from '../utils/auctionTimerUtils';
 import { getOptimisticRarity } from '../utils/rarityUtils';
 
 // Session read tracking for bidding operations
@@ -268,7 +269,7 @@ export const useBidding = (onAuctionUpdate) => {
     
     // Check if auction has ended
     const endTime = auction.endTime?.toDate?.() || new Date(auction.endTime?.seconds * 1000);
-    if (endTime && endTime <= new Date()) return false;
+    if (endTime && endTime <= getCorrectedNow()) return false;
     
     return true;
   }, [user]);
