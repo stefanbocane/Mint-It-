@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
-import { Alert, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Alert, Keyboard, StyleSheet, Text, TextInput, TouchableWithoutFeedback, View } from 'react-native';
 import { Button, Card, Modal, useTheme } from 'react-native-paper';
 import { calculateTimeRemaining } from '../../utils/auctionTimerUtils';
-import { RARITY_COLORS, RARITY_TYPES } from '../../utils/rarity';
+import { getDisplayRarity, getRarityColor, isCoined } from '../../utils/rarityUtils';
 
 /**
  * Modal component for placing bids on auctions
@@ -117,7 +117,13 @@ const AuctionBidModal = ({
     }
   }, [visible]);
 
-  const handlePlaceBid = () => {
+  const handlePlaceBid = async () => {
+    // 🚀 FIX: Early return if auction has ended - prevent double validation
+    if (isAuctionEnded || (selectedAuction?.status && selectedAuction.status !== 'active')) {
+      // Don't show alert here - the button should be disabled already
+      return;
+    }
+    
     // Check for valid bid amount
     if (!bidAmount || isNaN(parseInt(bidAmount))) {
       Alert.alert('Invalid Bid', 'Please enter a valid bid amount.');
@@ -141,26 +147,17 @@ const AuctionBidModal = ({
       return;
     }
     
-    // Only check if the auction has explicitly ended through a status change
-    // This prevents issues with time calculations causing false "ended" states
-    if (selectedAuction.status && selectedAuction.status !== 'active') {
-      Alert.alert('Auction Ended', 'This auction is no longer active.');
-      onDismiss();
-      return;
-    }
-    
-    // For time-based ending, only trust our state variable which is updated by the timer
-    // This prevents race conditions with calculateTimeRemaining
-    if (isAuctionEnded) {
-      Alert.alert('Auction Ended', 'This auction has already ended.');
-      onDismiss();
-      return;
-    }
-    
-    // Run the placeBid function from props with comprehensive error handling
+    // FIXED: Properly await placeBid and handle response to close modal
     try {
       console.log(`Attempting to place bid of ${bidValue} on auction ${selectedAuction.id}`);
-      placeBid(selectedAuction, bidAmount);
+      const success = await placeBid(selectedAuction, bidAmount);
+      
+      // CRITICAL: Close modal automatically on successful bid
+      if (success) {
+        console.log('Bid placed successfully, closing modal');
+        onDismiss();
+      }
+      // If success is false, placeBid already showed an error alert
     } catch (error) {
       console.error('Error in handlePlaceBid:', error);
       Alert.alert('Error', error.message || 'There was a problem placing your bid. Please try again.');
@@ -175,98 +172,88 @@ const AuctionBidModal = ({
   const isCurrentBidder = selectedAuction?.currentBidder === currentUser?.uid;
   const minimumBid = currentBidAmount + 1; // Always 1 coin higher than current bid
   
-  // Get the current rarity information
-  const isCoined = !selectedAuction.cardRarity || 
-                  selectedAuction.cardRarity === RARITY_TYPES.MYSTERY || 
-                  selectedAuction.cardRarity === 'unknown' || 
-                  selectedAuction.cardRarity === '';
-  
-  // Get the current rarity, ensuring we never display 'mystery' or 'unknown'
-  let displayRarity = selectedAuction.status === 'active' ?
-                    (selectedAuction.currentRarity || selectedAuction.cardRarity || RARITY_TYPES.COMMON) :
-                    (selectedAuction.cardRarity || selectedAuction.currentRarity || RARITY_TYPES.COMMON);
-  
-  // Always default to common if rarity is mystery or unknown
-  if (displayRarity === RARITY_TYPES.MYSTERY || 
-      displayRarity === 'unknown' || 
-      displayRarity === '') {
-    displayRarity = RARITY_TYPES.COMMON;
-  }
-                       
-  const rarityColor = RARITY_COLORS[displayRarity] || RARITY_COLORS.common;
+  // Use centralized rarity utilities
+  const isCardCoined = isCoined(selectedAuction);
+  const displayRarity = getDisplayRarity(selectedAuction);
+  const rarityColor = getRarityColor(selectedAuction);
+
+  // Debug logging to track rarity updates
+  console.log(`AuctionBidModal: Rarity for auction ${selectedAuction.id} - current: ${selectedAuction.currentRarity || 'undefined'}, card: ${selectedAuction.cardRarity || 'undefined'}, display: ${displayRarity}`);
   
   return (
     <Modal visible={visible} onDismiss={onDismiss} contentContainerStyle={styles.container}>
-      <Card style={styles.card}>
-        <Card.Title title={auctionName} />
-        <Card.Content>
-          {isCoined && (
-            <View style={styles.rarityContainer}>
-              <Text style={styles.rarityLabel}>Live Rarity:</Text>
-              <Text style={[styles.rarityValue, { color: rarityColor }]}>
-                {displayRarity.toUpperCase()}
-              </Text>
-              <View style={[styles.rarityIndicator, { backgroundColor: rarityColor }]} />
+      <TouchableWithoutFeedback onPress={Keyboard.dismiss} accessible={false}>
+        <Card style={styles.card}>
+          <Card.Title title={auctionName} />
+          <Card.Content>
+            {isCardCoined && (
+              <View style={styles.rarityContainer}>
+                <Text style={styles.rarityLabel}>Live Rarity:</Text>
+                <Text style={[styles.rarityValue, { color: rarityColor }]}>
+                  {displayRarity}
+                </Text>
+                <View style={[styles.rarityIndicator, { backgroundColor: rarityColor }]} />
+              </View>
+            )}
+            
+            <View style={styles.infoRow}>
+              <Text style={[styles.label, { color: colors.text }]}>Current Bid:</Text>
+              <Text style={styles.value}>{currentBidAmount} coins</Text>
             </View>
-          )}
-          
-          <View style={styles.infoRow}>
-            <Text style={[styles.label, { color: colors.text }]}>Current Bid:</Text>
-            <Text style={styles.value}>{currentBidAmount} coins</Text>
-          </View>
-          
-          <View style={styles.infoRow}>
-            <Text style={[styles.label, { color: colors.text }]}>Time Left:</Text>
-            <Text style={styles.value}>{isAuctionEnded ? 'Ended' : timeLeft}</Text>
-          </View>
-          
-          <View style={styles.infoRow}>
-            <Text style={[styles.label, { color: colors.text }]}>Your Status:</Text>
-            <Text style={[
-              styles.value, 
-              isCurrentBidder ? { color: colors.success || 'green', fontWeight: 'bold' } : { color: colors.error }
-            ]}>
-              {isCurrentBidder ? 'Winning' : 'Not Winning'}
-            </Text>
-          </View>
-          
-          <View style={styles.bidInputContainer}>
-            <Text style={[styles.bidInputLabel, { color: colors.text }]}>Place Your Bid:</Text>
-            <TextInput
-              style={[styles.bidInput, { borderColor: colors.backdrop, color: colors.text }]}
-              keyboardType="numeric"
-              value={bidAmount}
-              onChangeText={setBidAmount}
-              placeholder={`Minimum bid: ${minimumBid} coins`}
-              placeholderTextColor={colors.placeholder}
-              editable={!processingAction && !isAuctionEnded}
-            />
-            <Text style={[styles.bidTaxText, { color: colors.placeholder }]}>
-              Note: A 1 coin tax will be charged in addition to your bid amount.
-            </Text>
-          </View>
-        </Card.Content>
-        <Card.Actions style={styles.actions}>
-          <Button 
-            mode="outlined" 
-            onPress={onDismiss} 
-            style={styles.button} 
-            disabled={processingAction}
-          >
-            Cancel
-          </Button>
-          <Button 
-            mode="contained" 
-            onPress={handlePlaceBid} 
-            style={styles.button}
-            loading={processingAction}
-            disabled={processingAction || !bidAmount || parseInt(bidAmount) < minimumBid || isAuctionEnded}
-            color={colors.primary}
-          >
-            Place Bid
-          </Button>
-        </Card.Actions>
-      </Card>
+            
+            <View style={styles.infoRow}>
+              <Text style={[styles.label, { color: colors.text }]}>Time Left:</Text>
+              <Text style={styles.value}>{isAuctionEnded ? 'Ended' : timeLeft}</Text>
+            </View>
+            
+            <View style={styles.infoRow}>
+              <Text style={[styles.label, { color: colors.text }]}>Your Status:</Text>
+              <Text style={[
+                styles.value, 
+                isCurrentBidder ? { color: colors.success || 'green', fontWeight: 'bold' } : { color: colors.error }
+              ]}>
+                {isCurrentBidder ? 'Winning' : 'Not Winning'}
+              </Text>
+            </View>
+            
+            <View style={styles.bidInputContainer}>
+              <Text style={[styles.bidInputLabel, { color: colors.text }]}>Place Your Bid:</Text>
+              <TextInput
+                style={[styles.bidInput, { borderColor: colors.backdrop, color: colors.text }]}
+                keyboardType="numeric"
+                value={bidAmount}
+                onChangeText={setBidAmount}
+                placeholder={`Minimum bid: ${minimumBid} coins`}
+                placeholderTextColor={colors.placeholder}
+                editable={!processingAction && !isAuctionEnded}
+              />
+              <Text style={[styles.bidTaxText, { color: colors.placeholder }]}>
+                Note: A 1 coin tax will be charged in addition to your bid amount.
+              </Text>
+            </View>
+          </Card.Content>
+          <Card.Actions style={styles.actions}>
+            <Button 
+              mode="outlined" 
+              onPress={onDismiss} 
+              style={[styles.button, { flex: 1, marginRight: 8 }]} 
+              disabled={processingAction}
+            >
+              Cancel
+            </Button>
+            <Button 
+              mode="contained" 
+              onPress={handlePlaceBid} 
+              style={[styles.button, { flex: 1, marginLeft: 8 }]}
+              loading={processingAction}
+              disabled={processingAction || !bidAmount || parseInt(bidAmount) < minimumBid || isAuctionEnded}
+              color={colors.primary}
+            >
+              Place Bid
+            </Button>
+          </Card.Actions>
+        </Card>
+      </TouchableWithoutFeedback>
     </Modal>
   );
 };
@@ -346,12 +333,14 @@ const styles = StyleSheet.create({
     marginTop: 4,
   },
   actions: {
-    justifyContent: 'flex-end',
+    justifyContent: 'space-between',
     paddingHorizontal: 16,
     paddingBottom: 16,
+    paddingTop: 8,
   },
   button: {
-    marginLeft: 8,
+    minWidth: 120,
+    paddingHorizontal: 16,
   },
 });
 

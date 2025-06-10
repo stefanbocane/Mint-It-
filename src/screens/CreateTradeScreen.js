@@ -7,7 +7,10 @@ import ScreenBackground from '../components/ScreenBackground';
 import { db } from '../config/firebase';
 import { useAuth } from '../contexts/AuthContext';
 import { useGroup } from '../contexts/GroupContext';
+import CacheService from '../services/caching/CacheService';
+import GroupMembersLookupService from '../services/GroupMembersLookupService';
 import { sendTradeOfferNotification } from '../services/notifications';
+import consolidatedQueryService from '../utils/consolidatedQueryService';
 import { RARITY_COLORS } from '../utils/rarity';
 
 const { width } = Dimensions.get('window');
@@ -63,43 +66,94 @@ const CreateTradeScreen = ({ navigation, route }) => {
   const loadMembers = async () => {
     if (!currentGroup) return;
     try {
-      const groupRef = doc(db, 'groups', currentGroup.id);
-      const groupDoc = await getDoc(groupRef);
-      const groupData = groupDoc.data();
+      // OPTIMIZATION: Use GroupMembersLookupService instead of direct reads
+      const groupMembers = await GroupMembersLookupService.getGroupMembers(currentGroup.id, {
+        ttl: 5 * 60 * 1000 // 5 minute cache
+      });
       
-      if (!groupData?.members) {
-        setMembers([]);
-        return;
-      }
-
-      const memberPromises = groupData.members
-        .filter(memberId => memberId !== user.uid)
-        .map(async (memberId) => {
-          const userRef = doc(db, 'users', memberId);
-          const userDoc = await getDoc(userRef);
-          return {
-            id: memberId,
-            ...userDoc.data()
-          };
-        });
-
-      const membersData = await Promise.all(memberPromises);
-      setMembers(membersData);
+      // Filter out current user
+      const otherMembers = groupMembers.filter(member => member.id !== user.uid);
+      setMembers(otherMembers);
     } catch (error) {
       console.error('Error loading members:', error);
+      // Fallback to original implementation if needed
+      try {
+        const groupRef = doc(db, 'groups', currentGroup.id);
+        const groupDoc = await getDoc(groupRef);
+        const groupData = groupDoc.data();
+        
+        if (!groupData?.members) {
+          setMembers([]);
+          return;
+        }
+
+        const memberPromises = groupData.members
+          .filter(memberId => memberId !== user.uid)
+          .map(async (memberId) => {
+            const userRef = doc(db, 'users', memberId);
+            const userDoc = await getDoc(userRef);
+            return {
+              id: memberId,
+              ...userDoc.data()
+            };
+          });
+
+        const membersData = await Promise.all(memberPromises);
+        setMembers(membersData);
+      } catch (fallbackError) {
+        console.error('Error in fallback loadMembers:', fallbackError);
+      }
     }
   };
 
+  // OPTIMIZED: Use consolidated query service to replace dual query pattern
   const loadUserCards = async () => {
     if (!user || !currentGroup) return;
     setLoadingCards(true);
     
     try {
-      console.log('Loading user cards for trading...');
+      console.log('🚀 Loading user cards for trading with optimized service...');
+      
+      // Use the optimized consolidated query service instead of dual queries
+      const cards = await consolidatedQueryService.getCardsForTradeCreation(user.uid, currentGroup.id, {
+        ttl: 2 * 60 * 1000 // 2 minute cache
+      });
+      
+      console.log(`✅ Optimized service returned ${cards.length} cards`);
+      
+      // Process all cards with batch status verification
+      const statusFixedCards = [];
+      await verifyCardStatusesBatch(cards, statusFixedCards);
+      
+      // Filter valid cards
+      const validCards = cards.filter(card => 
+        card.name && card.imageUrl && card.rarity && !card.inTrade && !card.inAuction
+      );
+      
+      console.log(`📊 Total valid cards for trading: ${validCards.length}`);
+      if (statusFixedCards.length > 0) {
+        console.log(`🔧 Fixed status for ${statusFixedCards.length} cards`);
+      }
+      
+      setUserCards(validCards);
+      setSelectedCards([]);
+    } catch (error) {
+      console.error('❌ Error in optimized loadUserCards:', error);
+      
+      // Fallback to original dual query implementation
+      console.log('⚠️  Falling back to original dual query implementation');
+      await loadUserCardsOriginal();
+    } finally {
+      setLoadingCards(false);
+    }
+  };
+
+  // Original implementation as fallback
+  const loadUserCardsOriginal = async () => {
+    try {
+      console.log('Loading user cards for trading (fallback mode)...');
       const cardsRef = collection(db, 'cards');
       
-      // Query for cards using both ownerId and userId for backward compatibility
-      // First, get all cards for this user in this group
       const ownerQuery = query(
         cardsRef,
         where('ownerId', '==', user.uid),
@@ -117,9 +171,8 @@ const CreateTradeScreen = ({ navigation, route }) => {
         getDocs(userIdQuery)
       ]);
       
-      console.log(`Found ${ownerQuerySnapshot.docs.length} cards with ownerId and ${userIdQuerySnapshot.docs.length} cards with userId`);
+      console.log(`Found ${ownerQuerySnapshot.docs.length} cards with ownerId and ${userIdQuerySnapshot.docs.length} cards with userId (fallback)`);
       
-      // Combine results, removing duplicates
       const cardMap = new Map();
       
       ownerQuerySnapshot.docs.forEach(doc => {
@@ -132,128 +185,71 @@ const CreateTradeScreen = ({ navigation, route }) => {
         }
       });
       
-      // Filter cards that are actually available (not in trade or auction)
-      const validCards = [];
-      const invalidCards = [];
       const statusFixedCards = [];
+      await verifyCardStatusesBatch(cardMap.values(), statusFixedCards);
       
-      // Process all cards
-      for (const card of cardMap.values()) {
-        // Skip cards with missing required fields
-        if (!card.name || !card.imageUrl || !card.rarity) {
-          console.log(`Skipping invalid card: ${card.id} (missing required fields)`);
-          invalidCards.push(card);
-          continue;
-        }
-        
-        // Check and fix card status if needed
-        let needsStatusFix = false;
-        
-        // Check trade status
-        if (card.inTrade === true) {
-          if (card.tradeId) {
-            // Verify the trade actually exists and is pending
-            try {
-              const tradeRef = doc(db, 'trades', card.tradeId);
-              const tradeDoc = await getDoc(tradeRef);
-              
-              if (!tradeDoc.exists() || tradeDoc.data().status !== 'pending') {
-                // Trade doesn't exist or isn't pending
-                card.inTrade = false;
-                card.tradeId = null;
-                needsStatusFix = true;
-              }
-            } catch (error) {
-              console.error(`Error checking trade status for card ${card.id}:`, error);
-              // On error, assume we can fix it
-              card.inTrade = false;
-              card.tradeId = null;
-              needsStatusFix = true;
-            }
-          } else {
-            // Card marked as in trade but has no tradeId
-            card.inTrade = false;
-            needsStatusFix = true;
-          }
-        }
-        
-        // Check auction status
-        if (card.inAuction === true) {
-          if (card.auctionId) {
-            // Verify the auction actually exists and is active
-            try {
-              const auctionRef = doc(db, 'auctions', card.auctionId);
-              const auctionDoc = await getDoc(auctionRef);
-              
-              if (!auctionDoc.exists() || auctionDoc.data().status !== 'active') {
-                // Auction doesn't exist or isn't active
-                card.inAuction = false;
-                card.auctionId = null;
-                needsStatusFix = true;
-              }
-            } catch (error) {
-              console.error(`Error checking auction status for card ${card.id}:`, error);
-              // On error, assume we can fix it
-              card.inAuction = false;
-              card.auctionId = null;
-              needsStatusFix = true;
-            }
-          } else {
-            // Card marked as in auction but has no auctionId
-            card.inAuction = false;
-            needsStatusFix = true;
-          }
-        }
-        
-        // If card needs status fix, update it in the database
-        if (needsStatusFix) {
-          try {
-            const cardRef = doc(db, 'cards', card.id);
-            const updateData = {};
-            
-            // Only include fields that are defined
-            if (card.inTrade !== undefined) updateData.inTrade = card.inTrade;
-            if (card.inAuction !== undefined) updateData.inAuction = card.inAuction;
-            if (card.tradeId !== undefined) updateData.tradeId = card.tradeId;
-            if (card.auctionId !== undefined) updateData.auctionId = card.auctionId;
-            
-            await updateDoc(cardRef, updateData);
-            statusFixedCards.push(card.id);
-            console.log(`Fixed status for card ${card.id} (${card.name})`);
-          } catch (error) {
-            console.error(`Error fixing card status for ${card.id}:`, error);
-          }
-        }
-        
-        // Only add cards that are not in trade or auction to valid cards
-        if (!card.inTrade && !card.inAuction) {
-          validCards.push(card);
-        }
-      }
+      const validCards = Array.from(cardMap.values()).filter(card => 
+        card.name && card.imageUrl && card.rarity && !card.inTrade && !card.inAuction
+      );
       
-      console.log(`Total valid cards for trading: ${validCards.length}`);
-      if (statusFixedCards.length > 0) {
-        console.log(`Fixed status for ${statusFixedCards.length} cards`);
-      }
-      
+      console.log(`Total valid cards for trading: ${validCards.length} (fallback)`);
       setUserCards(validCards);
       setSelectedCards([]);
     } catch (error) {
-      console.error('Error fetching user cards for trading:', error);
+      console.error('Error in fallback loadUserCards:', error);
       Alert.alert('Error', 'Failed to load your cards. Please try again.');
+    }
+  };
+
+  // Helper function to batch verify card statuses using optimized readOptimizer
+  const verifyCardStatusesBatch = async (cards, statusFixedCards) => {
+    try {
+      const { batchVerifyCardStatuses } = await import('../utils/readOptimizer');
+      await batchVerifyCardStatuses(cards, statusFixedCards);
+    } catch (error) {
+      console.error('Error in optimized batch card status verification:', error);
+    }
+  };
+
+  // OPTIMIZED: Use consolidated query service for selected user cards
+  const loadSelectedUserCards = async () => {
+    if (!currentGroup || !selectedUser) return;
+    setLoadingCards(true);
+    try {
+      console.log(`🚀 Loading cards for user ${selectedUser.id} in group ${currentGroup.id} with optimized service...`);
+      
+      // Use the optimized consolidated query service
+      const cards = await consolidatedQueryService.getCardsForTradeCreation(selectedUser.id, currentGroup.id, {
+        ttl: 2 * 60 * 1000 // 2 minute cache
+      });
+      
+      console.log(`✅ Optimized service returned ${cards.length} cards for selected user`);
+      
+      // Filter valid cards (include all cards, not just those not in trade/auction)
+      const validCards = cards.filter(card => 
+        card.name && card.imageUrl && card.rarity
+      );
+      
+      console.log(`📊 Total valid cards for selected user: ${validCards.length}`);
+      setSelectedUserCards(validCards);
+      setRequestedCards([]);
+    } catch (error) {
+      console.error('❌ Error in optimized loadSelectedUserCards:', error);
+      
+      // Fallback to original implementation
+      console.log('⚠️  Falling back to original dual query for selected user');
+      await loadSelectedUserCardsOriginal();
     } finally {
       setLoadingCards(false);
     }
   };
 
-  const loadSelectedUserCards = async () => {
-    if (!currentGroup || !selectedUser) return;
-    setLoadingCards(true);
+  // Original implementation as fallback
+  const loadSelectedUserCardsOriginal = async () => {
     try {
-      console.log(`Loading cards for user ${selectedUser.id} in group ${currentGroup.id}...`);
+      console.log(`Loading cards for user ${selectedUser.id} in group ${currentGroup.id} (fallback)...`);
       const cardsRef = collection(db, 'cards');
       
-      // First, get all cards for the selected user in this group without filtering by trade/auction status
       const ownerQuery = query(
         cardsRef,
         where('ownerId', '==', selectedUser.id),
@@ -271,9 +267,8 @@ const CreateTradeScreen = ({ navigation, route }) => {
         getDocs(userIdQuery)
       ]);
       
-      console.log(`Found ${ownerQuerySnapshot.docs.length} cards with ownerId and ${userIdQuerySnapshot.docs.length} cards with userId`);
+      console.log(`Found ${ownerQuerySnapshot.docs.length} cards with ownerId and ${userIdQuerySnapshot.docs.length} cards with userId (fallback)`);
       
-      // Combine results, removing duplicates
       const cardMap = new Map();
       
       ownerQuerySnapshot.docs.forEach(doc => {
@@ -286,126 +281,36 @@ const CreateTradeScreen = ({ navigation, route }) => {
         }
       });
       
-      // Filter cards that are actually available (not in trade or auction)
-      const validCards = [];
-      const invalidCards = [];
+      // Process all cards with batch status verification
       const statusFixedCards = [];
+      await verifyCardStatusesBatch(cardMap.values(), statusFixedCards);
       
-      // Process all cards
-      for (const card of cardMap.values()) {
-        // Skip cards with missing required fields
-        if (!card.name || !card.imageUrl || !card.rarity) {
-          console.log(`Skipping invalid card: ${card.id} (missing required fields)`);
-          invalidCards.push(card);
-          continue;
-        }
-        
-        // Check and fix card status if needed
-        let needsStatusFix = false;
-        
-        // Check trade status
-        if (card.inTrade === true) {
-          if (card.tradeId) {
-            // Verify the trade actually exists and is pending
-            try {
-              const tradeRef = doc(db, 'trades', card.tradeId);
-              const tradeDoc = await getDoc(tradeRef);
-              
-              if (!tradeDoc.exists() || tradeDoc.data().status !== 'pending') {
-                // Trade doesn't exist or isn't pending
-                card.inTrade = false;
-                card.tradeId = null;
-                needsStatusFix = true;
-              }
-            } catch (error) {
-              console.error(`Error checking trade status for card ${card.id}:`, error);
-              // On error, assume we can fix it
-              card.inTrade = false;
-              card.tradeId = null;
-              needsStatusFix = true;
-            }
-          } else {
-            // Card marked as in trade but has no tradeId
-            card.inTrade = false;
-            needsStatusFix = true;
-          }
-        }
-        
-        // Check auction status
-        if (card.inAuction === true) {
-          if (card.auctionId) {
-            // Verify the auction actually exists and is active
-            try {
-              const auctionRef = doc(db, 'auctions', card.auctionId);
-              const auctionDoc = await getDoc(auctionRef);
-              
-              if (!auctionDoc.exists() || auctionDoc.data().status !== 'active') {
-                // Auction doesn't exist or isn't active
-                card.inAuction = false;
-                card.auctionId = null;
-                needsStatusFix = true;
-              }
-            } catch (error) {
-              console.error(`Error checking auction status for card ${card.id}:`, error);
-              // On error, assume we can fix it
-              card.inAuction = false;
-              card.auctionId = null;
-              needsStatusFix = true;
-            }
-          } else {
-            // Card marked as in auction but has no auctionId
-            card.inAuction = false;
-            needsStatusFix = true;
-          }
-        }
-        
-        // If card needs status fix, update it in the database
-        if (needsStatusFix) {
-          try {
-            const cardRef = doc(db, 'cards', card.id);
-            const updateData = {};
-            
-            // Only include fields that are defined
-            if (card.inTrade !== undefined) updateData.inTrade = card.inTrade;
-            if (card.inAuction !== undefined) updateData.inAuction = card.inAuction;
-            if (card.tradeId !== undefined) updateData.tradeId = card.tradeId;
-            if (card.auctionId !== undefined) updateData.auctionId = card.auctionId;
-            
-            await updateDoc(cardRef, updateData);
-            statusFixedCards.push(card.id);
-            console.log(`Fixed status for card ${card.id} (${card.name})`);
-          } catch (error) {
-            console.error(`Error fixing card status for ${card.id}:`, error);
-          }
-        }
-        
-        // Only add cards that are not in trade or auction to valid cards
-        if (!card.inTrade && !card.inAuction) {
-          validCards.push(card);
-        }
-      }
+      // Filter valid cards (include all cards, not just those not in trade/auction)
+      const validCards = Array.from(cardMap.values()).filter(card => 
+        card.name && card.imageUrl && card.rarity
+      );
       
-      console.log(`Found ${validCards.length} valid cards to request from selected user`);
+      console.log(`Found ${validCards.length} valid cards to request from selected user (fallback)`);
       if (statusFixedCards.length > 0) {
-        console.log(`Fixed status for ${statusFixedCards.length} cards`);
+        console.log(`Fixed status for ${statusFixedCards.length} cards (fallback)`);
       }
       
       setSelectedUserCards(validCards);
       setRequestedCards([]);
     } catch (error) {
-      console.error('Error loading selected user cards:', error);
+      console.error('Error loading selected user cards (fallback):', error);
       Alert.alert('Error', 'Failed to load cards from selected user.');
-    } finally {
-      setLoadingCards(false);
     }
   };
 
   const loadUserBalance = async () => {
     if (!user || !currentGroup) return;
     try {
-      const userRef = doc(db, 'users', user.uid);
-      const userDoc = await getDoc(userRef);
-      const userData = userDoc.data();
+      // OPTIMIZATION: Use CacheService instead of direct getDoc
+      const userData = await CacheService.getDocument('users', user.uid, {
+        ttl: 2 * 60 * 1000 // 2 minute cache for user data
+      });
+      
       setUserBalance(userData?.groupBalances?.[currentGroup.id] || 0);
     } catch (error) {
       console.error('Error loading user balance:', error);
@@ -561,11 +466,10 @@ const CreateTradeScreen = ({ navigation, route }) => {
     <ScreenBackground>
       <View style={{ flex: 1,  }}>
       <Appbar.Header style={{ backgroundColor: 'rgba(255,255,255,0.2)', elevation: 0, borderBottomWidth: 1, borderBottomColor: 'rgba(0,0,0,0.05)' }}>
-        <Appbar.BackAction onPress={() => navigation.navigate('TradesOverview')} />
         <Appbar.Content title="Create Trade" />
       </Appbar.Header>
       
-      <ScrollView contentContainerStyle={styles.container}>
+      <ScrollView style={styles.container} contentContainerStyle={{ paddingBottom: 100 }}>
         <Surface style={styles.section}>
           <Text style={[styles.sectionTitle, { color: theme.colors.text }]}>Select User</Text>
           <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.membersScroll}>

@@ -9,6 +9,7 @@ export default {
     sdkVersion: "53.0.0",
     runtimeVersion: "53",
     entryPoint: "./index.js",
+    projectId: process.env.EXPO_PROJECT_ID || "420acf72-35f8-422e-935e-88116abe9832",
     splash: {
       image: "./assets/images/splash-icon.png",
       resizeMode: "contain",
@@ -25,7 +26,7 @@ export default {
     },
     ios: {
       supportsTablet: true,
-      bundleIdentifier: "com.anonymous.Cardmates",
+      bundleIdentifier: "com.cardmates.app",
       infoPlist: {
         "NSCameraUsageDescription": "Allow Cardmates to access your camera to take photos for minting cards",
         "NSPhotoLibraryUsageDescription": "Allow Cardmates to access your photos to select images for minting cards",
@@ -39,7 +40,7 @@ export default {
         foregroundImage: "./assets/images/adaptive-icon.png",
         backgroundColor: "#ffffff"
       },
-      package: "com.anonymous.Cardmates",
+      package: "com.cardmates.app",
       permissions: [
         "android.permission.CAMERA",
         "android.permission.READ_EXTERNAL_STORAGE",
@@ -67,16 +68,22 @@ export default {
       tsconfigPaths: true
     },
     extra: {
-      firebaseApiKey: "REDACTED_FIREBASE_API_KEY",
-      firebaseAuthDomain: "cardmates-bca66.firebaseapp.com",
-      firebaseProjectId: "cardmates-bca66",
-      firebaseStorageBucket: "cardmates-bca66.firebasestorage.app",
-      firebaseMessagingSenderId: "37257408298",
-      firebaseAppId: "1:37257408298:web:6665c30d84f2f78d8af853",
-      firebaseMeasurementId: "G-8VTS46M32H",
+      // Firebase configuration - use environment variables
+      firebaseApiKey: process.env.FIREBASE_API_KEY,
+      firebaseAuthDomain: process.env.FIREBASE_AUTH_DOMAIN,
+      firebaseProjectId: process.env.FIREBASE_PROJECT_ID,
+      firebaseStorageBucket: process.env.FIREBASE_STORAGE_BUCKET,
+      firebaseMessagingSenderId: process.env.FIREBASE_MESSAGING_SENDER_ID,
+      firebaseAppId: process.env.FIREBASE_APP_ID,
+      firebaseMeasurementId: process.env.FIREBASE_MEASUREMENT_ID,
       eas: {
-        projectId: "420acf72-35f8-422e-935e-88116abe9832"
-      }
+        projectId: process.env.EXPO_PROJECT_ID
+      },
+      // Environment configuration
+      environment: process.env.NODE_ENV || "development",
+      apiBaseUrl: process.env.API_BASE_URL,
+      enableDebugLogs: process.env.ENABLE_DEBUG_LOGS === 'true',
+      enablePerformanceMonitoring: process.env.ENABLE_PERFORMANCE_MONITORING === 'true',
     }
   }
 }; 

@@ -21,6 +21,7 @@ web-build/
 
 # Metro
 .metro-health-check*
+.metro-cache/
 
 # debug
 npm-debug.*
@@ -33,8 +34,47 @@ yarn-error.*
 
 # local env files
 .env*.local
+.env
+.env.production
+.env.staging
 
 # typescript
 *.tsbuildinfo
 
 app-example
+
+# Build artifacts
+build/
+*.tar.gz
+*.apk
+*.aab
+*.ipa
+
+# Logs
+logs/
+*.log
+
+# Runtime data
+pids/
+*.pid
+*.seed
+*.pid.lock
+
+# Coverage directory used by tools like istanbul
+coverage/
+
+# Temporary folders
+tmp/
+temp/
+
+# Service account keys (keep these secure!)
+service-account-*.json
+google-services.json
+GoogleService-Info.plist
+
+# IDE specific files
+.vscode/settings.json
+.idea/
+
+# OS generated files
+Thumbs.db

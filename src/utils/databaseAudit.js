@@ -4,7 +4,6 @@
 
 import { getCacheStats } from './cacheMaintenanceUtils';
 import { getCacheKeys } from './cacheUtils';
-import { getCacheMetrics } from './globalCacheManager';
 
 /**
  * Get a detailed audit of database usage and caching patterns
@@ -12,7 +11,7 @@ import { getCacheMetrics } from './globalCacheManager';
  */
 export const getDatabaseUsageAudit = async () => {
   // Gather metrics from different sources
-  const memoryMetrics = getCacheMetrics();
+  const memoryMetrics = CacheService.getMetrics();
   const cacheKeys = await getCacheKeys();
   const cacheStats = await getCacheStats();
   

@@ -1,7 +1,7 @@
 import React, { useMemo } from 'react';
 import { Animated, Dimensions, Image, StyleSheet, View } from 'react-native';
 import { Text } from 'react-native-paper';
-import theme from '../theme';
+import { useTheme } from '../contexts/ThemeContext';
 import { getRarityColor, getRarityLabel } from '../utils/rarity';
 
 interface CardProps {
@@ -55,6 +55,7 @@ const Card: React.FC<CardProps> = ({
   borderType,
   animationValue
 }) => {
+  const { theme } = useTheme();
   const borderColor = getRarityColor(rarity);
   const rarityLabel = getRarityLabel(rarity);
   
@@ -150,7 +151,7 @@ const styles = StyleSheet.create({
     height: CARD_HEIGHT,
     borderRadius: 16,
     borderWidth: 3,
-    backgroundColor: theme.colors.surface,
+    backgroundColor: '#FFFFFF',
     elevation: 4,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
@@ -181,7 +182,7 @@ const styles = StyleSheet.create({
     padding: 8,
   },
   name: {
-    color: theme.colors.surface,
+    color: '#FFFFFF',
     fontSize: 14,
     fontWeight: 'bold',
     marginBottom: 4,
@@ -195,7 +196,7 @@ const styles = StyleSheet.create({
     borderRadius: 12,
   },
   rarityText: {
-    color: theme.colors.surface,
+    color: '#FFFFFF',
     fontSize: 12,
     fontWeight: 'bold',
   },

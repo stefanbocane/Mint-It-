@@ -1,6 +1,8 @@
-import { Image, StyleSheet, Text, View } from 'react-native';
+import { StyleSheet, Text, View } from 'react-native';
 import { Button, Card } from 'react-native-paper';
-import { RARITY_COLORS } from '../../utils/rarity';
+import { BORDER_OPTIONS, getBorderAnimationStyle } from '../../utils/borderOptions';
+import { getDisplayRarity, getRarityBadge, getRarityColor } from '../../utils/rarityUtils';
+import OptimizedImage from '../common/OptimizedImage';
 import AuctionTimer from './AuctionTimer';
 
 const AuctionListItem = ({ 
@@ -17,50 +19,40 @@ const AuctionListItem = ({
     return null; // Don't render if auction data is invalid
   }
   
-  // Get color for rarity with fallbacks for missing data
-  const getRarityColor = () => {
-    // Get the current rarity with appropriate fallbacks
-    const rarity = auction?.currentRarity || auction?.cardRarity || 'common';
+  // Use centralized rarity utilities
+  const rarityColor = getRarityColor(auction);
+  const rarityBadge = getRarityBadge(auction);
+  
+  // Enhanced auction end handler
+  const handleAuctionEnd = (endedAuction) => {
+    console.log(`🎯 AuctionListItem: Auction ${endedAuction.id} ended, triggering completion`);
     
-    // If rarity is mystery or unknown, use common
-    if (rarity === 'mystery' || rarity === 'unknown' || rarity === '') {
-      return RARITY_COLORS.common;
+    if (onAuctionEnded) {
+      // Call the parent's onAuctionEnded with the auction data
+      onAuctionEnded(endedAuction);
+    } else {
+      console.warn(`🎯 No onAuctionEnded handler provided for auction ${endedAuction.id}`);
     }
-    
-    return RARITY_COLORS[rarity] || RARITY_COLORS.common;
   };
   
-  const rarityColor = getRarityColor();
-  
-  // Determine what rarity to display
-  const displayRarity = () => {
-    // Always prioritize the current rarity for active auctions
-    // For completed/expired auctions, use cardRarity (final rarity)
-    
-    // If auction status is completed, expired, or canceled, use the final cardRarity if valid
-    if ((auction.status === 'completed' || auction.status === 'expired' || auction.status === 'canceled') && 
-        auction.cardRarity && 
-        auction.cardRarity !== 'mystery' && 
-        auction.cardRarity !== 'unknown' && 
-        auction.cardRarity !== '') {
-      return auction.cardRarity.toUpperCase();
+  // Get border style for the auction card if it has a border
+  const getBorderStyle = () => {
+    if (!auction?.borderType || auction.borderType === 'default') {
+      return {};
     }
-    
-    // For active auctions, prioritize currentRarity which reflects the live status
-    // If currentRarity is missing or mystery, fall back to cardRarity
-    let rarity = auction.status === 'active' ? 
-               (auction.currentRarity || auction.cardRarity || 'COMMON') : 
-               (auction.cardRarity || auction.currentRarity || 'COMMON');
-    
-    // Always convert mystery/unknown to COMMON
-    if (rarity.toLowerCase() === 'mystery' || 
-        rarity.toLowerCase() === 'unknown' || 
-        rarity === '') {
-      rarity = 'COMMON';
-    }
-    
-    return rarity.toUpperCase();
+
+    const borderOption = BORDER_OPTIONS.find(b => b.id === auction.borderType);
+    if (!borderOption) return {};
+
+    return getBorderAnimationStyle(
+      borderOption.animationType,
+      borderOption.color,
+      borderOption.secondaryColor,
+      borderOption.glowIntensity
+    );
   };
+
+  const borderStyle = getBorderStyle();
   
   return (
     // Outer wrapper for shadow
@@ -80,15 +72,17 @@ const AuctionListItem = ({
             <View style={styles.innerWrapper}>
               <Card.Content style={styles.cardContent}>
                 <View style={styles.cardImageContainer}>
-                  <View style={styles.imageWrapper}>
-                    <Image
-                      source={{ uri: auction?.cardImage || 'https://via.placeholder.com/100' }}
+                  <View style={[styles.imageWrapper, borderStyle]}>
+                    <OptimizedImage
+                      source={{ uri: auction?.cardImage }}
                       style={styles.cardImage}
                       resizeMode="cover"
+                      fallbackSource="https://via.placeholder.com/100"
+                      testID={`auction-image-${auction.id}`}
                     />
-                    <View style={[styles.rarityBadge, { backgroundColor: `${rarityColor}CC` }]}>
+                    <View style={[styles.rarityBadge, { backgroundColor: rarityBadge.backgroundColor }]}>
                       <Text style={styles.rarityText}>
-                        {displayRarity()}
+                        {rarityBadge.text}
                       </Text>
                     </View>
                   </View>
@@ -110,9 +104,7 @@ const AuctionListItem = ({
                     <Text style={styles.timeLabel}>Time left:</Text>
                     <AuctionTimer 
                       auction={auction}
-                      onEnd={() => {
-                        if (onAuctionEnded) onAuctionEnded(auction);
-                      }}
+                      onEnd={handleAuctionEnd}
                       style={styles.timeValue}
                     />
                   </View>
@@ -131,7 +123,7 @@ const AuctionListItem = ({
                   <View style={styles.rarityInfo}>
                     <Text style={styles.rarityLabel}>Live Rarity:</Text>
                     <Text style={[styles.rarityValue, { color: rarityColor, fontWeight: 'bold' }]}>
-                      {displayRarity()}
+                      {getDisplayRarity(auction)}
                     </Text>
                   </View>
                   

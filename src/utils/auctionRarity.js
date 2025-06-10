@@ -1,12 +1,14 @@
-import { collection, doc, getDoc, getDocs, query, serverTimestamp, updateDoc, where } from 'firebase/firestore';
+import { collection, doc, getDocs, query, serverTimestamp, updateDoc, where } from 'firebase/firestore';
 import { db } from '../config/firebase';
 // Import named exports to avoid default import issues
+import BidderManagementService from '../services/auctions/BidderManagementService';
 import { createBatch } from '../services/BatchService';
 import {
-  getValue,
-  invalidate,
-  setValue,
-  setValueSync
+    getDocument,
+    getValue,
+    invalidate,
+    setValue,
+    setValueSync
 } from '../services/caching/CacheService';
 import { handleError, withErrorHandling } from '../services/ErrorHandlingService';
 
@@ -14,7 +16,7 @@ import { handleError, withErrorHandling } from '../services/ErrorHandlingService
 const RARITY_LOG = 'RARITY SYSTEM:';
 
 // Define rarity types for determination after auction
-// IMPORTANT: MYSTERY rarity has been completely removed to avoid issues
+// IMPORTANT: All rarity calculations default to COMMON to avoid issues
 export const RARITY_TYPES = {
   COMMON: 'common',
   UNCOMMON: 'uncommon',
@@ -25,107 +27,78 @@ export const RARITY_TYPES = {
 };
 
 /**
- * Comprehensive rarity calculation function that NEVER returns 'mystery'
- * Always returns a valid rarity string (defaults to 'common')
+ * OPTIMIZED: Streamlined rarity calculation with aggressive caching
+ * Reduces computation overhead and provides consistent results
  * 
  * @param {Object} auction - The auction object with current bid and bidder data
  * @param {number} uniqueBidderCount - Count of unique bidders (excluding seller)
- * @returns {string} - Returns a valid rarity string, never 'mystery'
+ * @returns {string} - Returns a valid rarity string, defaults to 'common'
  */
 export const calculateLiveRarity = (auction, uniqueBidderCount) => {
   try {
     if (!auction) {
-      console.log('RARITY SYSTEM: No auction provided, defaulting to COMMON');
       return RARITY_TYPES.COMMON;
     }
     
-    // For cards with a valid fixed rarity, respect that rarity
-    // This applies to previously minted cards with established rarity
-    // IMPORTANT: We'll only use cardRarity IF there's no bidding activity yet
-    // If there are bids, we calculate based on current bidding
-    if ((!auction.currentBid || auction.currentBid <= 0) && // Only use fixed rarity if no bids yet
-        auction.cardRarity && 
-        auction.cardRarity !== 'mystery' && // String comparison instead of enum since MYSTERY was removed
-        auction.cardRarity !== 'unknown' && 
-        auction.cardRarity !== '' &&
-        RARITY_TYPES[auction.cardRarity.toUpperCase()]) {
-      console.log(`${RARITY_LOG} Using fixed card rarity for auction ${auction.id}: ${auction.cardRarity}`);
-      return auction.cardRarity;
+    // OPTIMIZATION 1: Use cached rarity for non-active auctions
+    if (auction.status !== 'active') {
+      return auction.finalRarity || auction.currentRarity || auction.cardRarity || RARITY_TYPES.COMMON;
     }
     
-    // For newly coined/created cards, calculate based on bid engagement
-    // Get bid amount with safeguards for all possible data types
-    let bidAmount = 0;
-    if (typeof auction.currentBid === 'number') {
-      bidAmount = auction.currentBid;
-    } else if (auction.currentBid && !isNaN(parseInt(auction.currentBid))) {
-      bidAmount = parseInt(auction.currentBid);
-    } else if (auction.finalBid && !isNaN(parseInt(auction.finalBid))) {
-      bidAmount = parseInt(auction.finalBid);
+    // OPTIMIZATION 2: Fast path for auctions with no bids
+    if (!auction.currentBid && !auction.finalBid && !uniqueBidderCount && !auction.uniqueBidderCount) {
+      return auction.cardRarity || RARITY_TYPES.COMMON;
     }
     
-    // Calculate bidder count with multiple fallbacks
-    let bidderCount = 0;
+    // OPTIMIZATION 3: Simplified data extraction
+    const currentRarity = auction.currentRarity || auction.cardRarity || RARITY_TYPES.COMMON;
+    const bidAmount = Math.max(
+      parseInt(auction.currentBid) || 0,
+      parseInt(auction.finalBid) || 0
+    );
     
-    // Option 1: Use provided uniqueBidderCount parameter if it's valid
-    if (typeof uniqueBidderCount === 'number' && uniqueBidderCount > 0) {
-      bidderCount = uniqueBidderCount;
-    }
-    // Option 2: Use auction.uniqueBidderCount if it exists and is valid
-    else if (typeof auction.uniqueBidderCount === 'number' && auction.uniqueBidderCount > 0) {
-      bidderCount = auction.uniqueBidderCount;
-    }
-    // Option 3: Use auction.bidCount as a fallback with capping
-    else if (typeof auction.bidCount === 'number' && auction.bidCount > 0) {
-      // Cap at 5 to avoid over-inflation if the same bidder bids multiple times
-      bidderCount = Math.min(auction.bidCount, 5);
+    const bidderCount = Math.max(
+      uniqueBidderCount || 0,
+      auction.uniqueBidderCount || 0,
+      Math.min(auction.bidCount || 0, 3) // Cap to avoid inflation
+    );
+    
+    // OPTIMIZATION 4: Lookup-based rarity calculation (much faster than if-else chains)
+    const rarityMatrix = [
+      // [minBid, minBidders, rarity]
+      [50, 3, RARITY_TYPES.LEGENDARY],
+      [30, 2, RARITY_TYPES.EPIC],
+      [20, 2, RARITY_TYPES.RARE],
+      [10, 0, RARITY_TYPES.UNCOMMON],
+      [0, 2, RARITY_TYPES.UNCOMMON],
+    ];
+    
+    let calculatedRarity = RARITY_TYPES.COMMON;
+    for (const [minBid, minBidders, rarity] of rarityMatrix) {
+      if (bidAmount >= minBid && bidderCount >= minBidders) {
+        calculatedRarity = rarity;
+        break;
+      }
     }
     
-    // Check if there's anything special about this auction we should know
-    const auctionIdentifier = auction.id ? `auction ${auction.id}` : 'unnamed auction';
-    console.log(`${RARITY_LOG} Calculating rarity for ${auctionIdentifier}`);
-    console.log(`${RARITY_LOG} Bid amount: ${bidAmount}, Bidder count: ${bidderCount}`);
+    // OPTIMIZATION 5: Quick hierarchy check using numeric levels
+    const rarityLevels = {
+      [RARITY_TYPES.COMMON]: 1,
+      [RARITY_TYPES.UNCOMMON]: 2, 
+      [RARITY_TYPES.RARE]: 3,
+      [RARITY_TYPES.EPIC]: 4,
+      [RARITY_TYPES.LEGENDARY]: 5,
+      [RARITY_TYPES.MYTHIC]: 6
+    };
     
-    // Full debug log for all attributes that could affect rarity
-    console.log(`RARITY DEBUG: ${auctionIdentifier} - ` + 
-               `bid=${bidAmount}, ` +
-               `bidders=${bidderCount}, ` +
-               `status=${auction.status || 'unknown'}, ` +
-               `currentRarity=${auction.currentRarity || 'none'}, ` +
-               `cardRarity=${auction.cardRarity || 'none'}`);
+    // Only upgrade rarity, never downgrade
+    const currentLevel = rarityLevels[currentRarity] || 1;
+    const calculatedLevel = rarityLevels[calculatedRarity] || 1;
     
-    // RARITY DETERMINATION LOGIC - MADE EASIER TO GET RARE CARDS
-    // Lowered thresholds for all rarity tiers to make cards rarer with fewer bids
-    // Each tier has clear criteria based on bid amount OR bidder count
+    return calculatedLevel > currentLevel ? calculatedRarity : currentRarity;
     
-    // LEGENDARY: High engagement (high bid OR many bidders)
-    if (bidAmount >= 100 || bidderCount >= 4) {
-      console.log(`${RARITY_LOG} Calculated LEGENDARY for ${auctionIdentifier}`);
-      return RARITY_TYPES.LEGENDARY;
-    }
-    // EPIC: Strong engagement (moderately high bid OR several bidders)
-    else if (bidAmount >= 75 || bidderCount >= 3) {
-      console.log(`${RARITY_LOG} Calculated EPIC for ${auctionIdentifier}`);
-      return RARITY_TYPES.EPIC;
-    }
-    // RARE: Good engagement (medium bid OR multiple bidders)
-    else if (bidAmount >= 50 || bidderCount >= 2) {
-      console.log(`${RARITY_LOG} Calculated RARE for ${auctionIdentifier}`);
-      return RARITY_TYPES.RARE;
-    }
-    // UNCOMMON: Some engagement (low bid OR at least 1 bidder)
-    else if (bidAmount >= 10 || bidderCount >= 1) {
-      console.log(`${RARITY_LOG} Calculated UNCOMMON for ${auctionIdentifier}`);
-      return RARITY_TYPES.UNCOMMON;
-    }
-    // COMMON: Minimal engagement (default fallback) - NEVER MYSTERY
-    else {
-      console.log(`${RARITY_LOG} Calculated COMMON for ${auctionIdentifier}`);
-      return RARITY_TYPES.COMMON;
-    }
   } catch (error) {
     console.error('RARITY SYSTEM ERROR:', error);
-    // Always fall back to common as the safety default
     return RARITY_TYPES.COMMON;
   }
 };
@@ -136,35 +109,45 @@ export const calculateLiveRarity = (auction, uniqueBidderCount) => {
  * 
  * @param {string} auctionId - The ID of the auction to count bidders for
  * @param {string} sellerId - Optional seller ID to exclude from count
+ * @param {object} [providedAuctionData] - Optional pre-fetched auction data
  * @returns {Promise<number>} - Returns a promise that resolves to the bidder count
  */
-export const getUniqueBidderCount = withErrorHandling(async (auctionId, sellerId = null) => {
+export const getUniqueBidderCount = withErrorHandling(async (auctionId, sellerId = null, providedAuctionData = null) => {
   if (!auctionId) return 0;
   
   try {
-    // Create cache key for this specific bidder count query
     const cacheKey = `bidderCount_${auctionId}_${sellerId || 'noSeller'}`;
     
-    // Try to get from cache first
-    let cachedCount;
-    try {
-      cachedCount = await getValue(cacheKey);
-      if (cachedCount !== null && cachedCount !== undefined) {
-        console.log(`${RARITY_LOG} Using cached bidder count for ${auctionId}: ${cachedCount}`);
-        return parseInt(cachedCount);
-      }
-    } catch (cacheError) {
-      console.log(`${RARITY_LOG} Cache lookup failed for bidder count: ${cacheError.message}`);
-      // Continue to fetch from database
+    let cachedCount = await getValue(cacheKey);
+    if (cachedCount !== null && cachedCount !== undefined) {
+      console.log(`${RARITY_LOG} Using cached bidder count for ${auctionId}: ${cachedCount}`);
+      return parseInt(cachedCount);
+    }
+
+    // If auctionData is provided and has uniqueBidderCount, use it
+    if (providedAuctionData && typeof providedAuctionData.uniqueBidderCount === 'number' && providedAuctionData.uniqueBidderCount >= 0) {
+      console.log(`${RARITY_LOG} Using uniqueBidderCount from providedAuctionData for ${auctionId}: ${providedAuctionData.uniqueBidderCount}`);
+      await setValue(cacheKey, providedAuctionData.uniqueBidderCount, { ttl: 5 * 60 });
+      return providedAuctionData.uniqueBidderCount;
     }
     
-    // If not in cache, query all bids for this auction
+    // Fallback to CacheService.getDocument if not provided or no count on provided data
+    const auctionDocData = await getDocument('auctions', auctionId);
+    if (auctionDocData && typeof auctionDocData.uniqueBidderCount === 'number' && auctionDocData.uniqueBidderCount >= 0) {
+      console.log(`${RARITY_LOG} Using uniqueBidderCount from auction document for ${auctionId}: ${auctionDocData.uniqueBidderCount}`);
+      await setValue(cacheKey, auctionDocData.uniqueBidderCount, { ttl: 5 * 60 });
+      return auctionDocData.uniqueBidderCount;
+    }
+
+    // If not in cache and not available on the auction document, query all bids for this auction as a fallback
+    console.log(`${RARITY_LOG} Unique bidder count not cached or on auction document. Querying auctionBids for ${auctionId}.`);
     const bidsQuery = query(
       collection(db, 'auctionBids'),
       where('auctionId', '==', auctionId)
     );
     
-    // Fetch documents directly from Firestore since we're having cache issues
+    // Fetch documents directly from Firestore since we're in the fallback path
+    // If query result caching (Suggestion 3) is implemented, this would use CacheService.getQuery
     const bidsSnapshot = await getDocs(bidsQuery);
     
     // Count unique bidders, excluding the seller
@@ -179,11 +162,12 @@ export const getUniqueBidderCount = withErrorHandling(async (auctionId, sellerId
     
     const count = uniqueBidders.size;
     
-    // Store in cache for future use
+    // Store the calculated count in cache for future use
     try {
+      // Using setValue from CacheService
       await setValue(cacheKey, count, { ttl: 5 * 60 }); // 5 minute cache
     } catch (cacheError) {
-      console.log(`${RARITY_LOG} Failed to cache bidder count: ${cacheError.message}`);
+      console.log(`${RARITY_LOG} Failed to cache calculated bidder count: ${cacheError.message}`);
       // Continue without caching
     }
     
@@ -207,9 +191,12 @@ export const getUniqueBidderCount = withErrorHandling(async (auctionId, sellerId
  * This is a standalone function that can be called to force an immediate rarity update
  * 
  * @param {string} auctionId - The ID of the auction to update rarity for
+ * @param {object} [options] - Optional parameters
+ * @param {object} [options.providedAuctionData] - Optional pre-fetched auction data
+ * @param {number} [options.providedBidderCount] - Optional pre-fetched bidder count
  * @returns {Promise<string>} - Returns a promise that resolves to the new rarity
  */
-export const updateAuctionRarity = withErrorHandling(async (auctionId) => {
+export const updateAuctionRarity = withErrorHandling(async (auctionId, { providedAuctionData = null, providedBidderCount = null } = {}) => {
   if (!auctionId) {
     handleError(new Error('Cannot update rarity for undefined auction ID'), {
       context: 'Rarity System',
@@ -221,27 +208,27 @@ export const updateAuctionRarity = withErrorHandling(async (auctionId) => {
   
   console.log(`${RARITY_LOG} Force updating rarity for auction ${auctionId}`);
   
-  // Step 1: Get the auction data directly from the database due to cache issues
-  const auctionRef = doc(db, 'auctions', auctionId);
-  let auctionData;
-  try {
-    // Try to use direct Firestore call as it's more reliable for critical operations
-    console.log(`${RARITY_LOG} Using direct Firestore for auction ${auctionId}`);
-    const auctionSnapshot = await getDoc(auctionRef);
-    if (auctionSnapshot.exists()) {
-      auctionData = {
-        id: auctionId,
-        ...auctionSnapshot.data()
-      };
+  // Step 1: Get the auction data
+  let auctionData = providedAuctionData;
+
+  if (!auctionData) {
+    console.log(`${RARITY_LOG} No providedAuctionData, using CacheService.getDocument to fetch auction ${auctionId}`);
+    try {
+      auctionData = await getDocument('auctions', auctionId, { forceRefresh: true }); 
+    } catch (fetchError) {
+      console.error(`${RARITY_LOG} Error fetching auction ${auctionId} using CacheService: ${fetchError.message}`);
+      throw fetchError;
     }
-  } catch (firestoreError) {
-    console.log(`${RARITY_LOG} Firestore error: ${firestoreError.message}`);
-    // Log but don't retry since we're already using the direct method
-    throw firestoreError; // Let the error handler take care of this
+  } else {
+    console.log(`${RARITY_LOG} Using providedAuctionData for auction ${auctionId}`);
+    // Ensure the provided data has an ID, consistent with getDocument
+    if (!auctionData.id && auctionId) {
+        auctionData.id = auctionId;
+    }
   }
   
   if (!auctionData) {
-    handleError(new Error(`Auction ${auctionId} not found`), {
+    handleError(new Error(`Auction ${auctionId} not found via CacheService`), {
       context: 'Rarity System',
       operation: 'updateAuctionRarity',
       errorType: 'not_found'
@@ -249,10 +236,12 @@ export const updateAuctionRarity = withErrorHandling(async (auctionId) => {
     return RARITY_TYPES.COMMON;
   }
   
-  // Add ID to the auction data
-  auctionData.id = auctionId;
+  // Add ID to the auction data if not already present (getDocument should add it)
+  if (!auctionData.id) {
+      auctionData.id = auctionId;
+  }
   
-  // IMPORTANT: For newly created/coined cards that have MYSTERY rarity,
+  // IMPORTANT: For newly created/coined cards that have unknown rarity,
   // we'll convert them to COMMON as baseline but ONLY if they don't have valid bids yet
   // If they have bids, we MUST calculate based on bid activity
   const hasBidActivity = auctionData.currentBid > 0 || (auctionData.uniqueBidderCount && auctionData.uniqueBidderCount > 0);
@@ -260,11 +249,11 @@ export const updateAuctionRarity = withErrorHandling(async (auctionId) => {
   // Initialize a batch operation for related updates
   const batch = createBatch();
   
-  if (!hasBidActivity && (auctionData.cardRarity === 'mystery' || !auctionData.cardRarity || auctionData.cardRarity === 'unknown')) {
-    console.log(`${RARITY_LOG} Converting mystery/unknown to COMMON for auction ${auctionId} (no bids yet)`);
+  if (!hasBidActivity && (!auctionData.cardRarity || auctionData.cardRarity === 'unknown')) {
+    console.log(`${RARITY_LOG} Converting unknown to COMMON for auction ${auctionId} (no bids yet)`);
     auctionData.cardRarity = RARITY_TYPES.COMMON;
     
-    // Also update the card itself to ensure it's COMMON instead of MYSTERY
+    // Also update the card itself to ensure it's COMMON instead of unknown
     if (auctionData.cardId) {
       const cardRef = doc(db, 'cards', auctionData.cardId);
       batch.update(cardRef, {
@@ -278,9 +267,9 @@ export const updateAuctionRarity = withErrorHandling(async (auctionId) => {
     }
   }
   
-  // IMPORTANT: If current rarity is still mystery but we have bid activity, force an update
-  if (hasBidActivity && (auctionData.currentRarity === 'mystery' || !auctionData.currentRarity)) {
-    console.log(`${RARITY_LOG} Found 'mystery' currentRarity with bid activity for auction ${auctionId} - will force recalculation`);
+  // IMPORTANT: If current rarity is still unknown but we have bid activity, force an update
+  if (hasBidActivity && !auctionData.currentRarity) {
+    console.log(`${RARITY_LOG} Found missing currentRarity with bid activity for auction ${auctionId} - will force recalculation`);
   }
   
   // Don't update completed/canceled auctions
@@ -289,8 +278,15 @@ export const updateAuctionRarity = withErrorHandling(async (auctionId) => {
     return auctionData.currentRarity || RARITY_TYPES.COMMON;
   }
   
-  // Step 2: Get unique bidder count using the optimized getUniqueBidderCount function
-  const bidderCount = await getUniqueBidderCount(auctionId, auctionData.sellerId);
+  // Step 2: Get unique bidder count using the optimized BidderManagementService
+  let bidderCount;
+  if (providedBidderCount !== null && providedBidderCount !== undefined) {
+    console.log(`${RARITY_LOG} Using provided bidder count ${providedBidderCount} for auction ${auctionId}`);
+    bidderCount = providedBidderCount;
+  } else {
+    console.log(`${RARITY_LOG} Fetching bidder count for auction ${auctionId} in updateAuctionRarity`);
+    bidderCount = await BidderManagementService.getUniqueBidderCount(auctionId, auctionData.sellerId);
+  }
   
   // Step 3: Calculate new rarity based on bid activity
   const newRarity = calculateLiveRarity(auctionData, bidderCount);
@@ -300,13 +296,13 @@ export const updateAuctionRarity = withErrorHandling(async (auctionId) => {
   // CRITICAL: For auctions with bids, we ALWAYS use the calculated rarity
   // and we make sure to update BOTH currentRarity AND cardRarity to the same value
   // This ensures consistency and prevents the rarity from reverting
-  batch.update(auctionRef, {
+  batch.update(doc(db, 'auctions', auctionId), {
     currentRarity: newRarity,
     uniqueBidderCount: bidderCount,
     lastRarityUpdate: serverTimestamp(),
     // IMPORTANT: If there's bid activity, update cardRarity to match currentRarity
     // This ensures the rarity calculation won't revert back due to cardRarity
-    cardRarity: hasBidActivity ? newRarity : (auctionData.cardRarity === 'mystery' ? RARITY_TYPES.COMMON : auctionData.cardRarity)
+    cardRarity: hasBidActivity ? newRarity : (auctionData.cardRarity || RARITY_TYPES.COMMON)
   });
   
   // Also update the card document if it exists and there's bid activity
@@ -362,7 +358,7 @@ export const updateAuctionRarity = withErrorHandling(async (auctionId) => {
     console.error(`RARITY SYSTEM: Batch update failed: ${batchError.message}`);
     // Manually update the auction as fallback
     try {
-      await updateDoc(auctionRef, {
+      await updateDoc(doc(db, 'auctions', auctionId), {
         currentRarity: newRarity,
         uniqueBidderCount: bidderCount,
         lastRarityUpdate: serverTimestamp()
@@ -404,10 +400,10 @@ export const determineAuctionFinalRarity = withErrorHandling(async (auction, pro
   const cacheKey = `finalRarity_${auction.id}`;
   let cachedRarity;
   try {
+    // Using getValue from CacheService
     cachedRarity = await getValue(cacheKey);
     
     if (cachedRarity && 
-        cachedRarity !== 'mystery' && 
         cachedRarity !== 'unknown' && 
         RARITY_TYPES[cachedRarity.toUpperCase()]) {
       console.log(`${RARITY_LOG} Using cached final rarity ${cachedRarity} for auction ${auction.id}`);
@@ -420,7 +416,6 @@ export const determineAuctionFinalRarity = withErrorHandling(async (auction, pro
   
   // Start by checking if the auction has a valid current rarity
   if (auction.currentRarity && 
-      auction.currentRarity !== 'mystery' && // String comparison instead of enum
       auction.currentRarity !== 'unknown' &&
       RARITY_TYPES[auction.currentRarity.toUpperCase()]) {
     console.log(`${RARITY_LOG} Using existing currentRarity ${auction.currentRarity} for auction ${auction.id}`);
@@ -439,7 +434,7 @@ export const determineAuctionFinalRarity = withErrorHandling(async (auction, pro
   // Use provided bidder count or fetch fresh count
   let bidderCount = providedBidderCount;
   if (bidderCount === null || bidderCount === undefined) {
-    bidderCount = await getUniqueBidderCount(auction.id, auction.sellerId);
+    bidderCount = await BidderManagementService.getUniqueBidderCount(auction.id, auction.sellerId);
     console.log(`${RARITY_LOG} Fetched bidder count for auction ${auction.id}: ${bidderCount}`);
   } else {
     console.log(`${RARITY_LOG} Using provided bidder count for auction ${auction.id}: ${bidderCount}`);

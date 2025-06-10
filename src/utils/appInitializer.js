@@ -1,150 +1,35 @@
 /**
  * App initialization utilities for optimizing startup and caching
+ * 
+ * DEPRECATED: Most functionality moved to UnifiedBootstrapService
+ * This file maintained for backward compatibility only
  */
 
-import { getAuth } from 'firebase/auth';
-import { collection, doc, getDoc, limit, orderBy, query, where } from 'firebase/firestore';
-import { db } from '../config/firebase';
-import { CACHE_TTL } from '../constants/cacheConfig';
-import { clearExpiredCache } from './cacheUtils';
-import { getCachedDoc, getCachedDocFields, getCachedQuery } from './firestoreUtils';
-import { getCacheMetrics } from './globalCacheManager';
 
-// Preload important user-specific data on login
+// DEPRECATED: Use UnifiedBootstrapService.performUnifiedBootstrap instead
+
+// DEPRECATED: Use UnifiedBootstrapService.performUnifiedBootstrap instead
 export const preloadUserData = async (userId, groupId) => {
-  if (!userId) return;
+  console.warn('preloadUserData is deprecated. Use UnifiedBootstrapService.performUnifiedBootstrap instead.');
   
-  console.log('Preloading essential user data...');
-  
-  try {
-    // Execute these in parallel for speed
-    const preloadPromises = [];
-    
-    // 1. Preload user profile
-    preloadPromises.push(
-      getCachedDoc('users', userId, { 
-        ttl: CACHE_TTL.USER_PROFILE,
-        forceRefresh: true 
-      })
-    );
-    
-    // If we have a group ID, load group-specific data
-    if (groupId) {
-      // 2. Preload user cards
-      const cardsQuery = query(
-        collection(db, 'cards'),
-        where('userId', '==', userId),
-        where('groupId', '==', groupId),
-        limit(20)
-      );
-      
-      preloadPromises.push(
-        getCachedQuery(cardsQuery, {
-          ttl: CACHE_TTL.COLLECTION,
-          cacheKey: `cards_user_${userId}_${groupId}_preload`
-        })
-      );
-      
-      // 3. Preload active auctions
-      const auctionsQuery = query(
-        collection(db, 'auctions'),
-        where('groupId', '==', groupId),
-        where('status', '==', 'active'),
-        limit(10)
-      );
-      
-      preloadPromises.push(
-        getCachedQuery(auctionsQuery, {
-          ttl: CACHE_TTL.AUCTION_DATA,
-          cacheKey: `auctions_active_${groupId}_preload`
-        })
-      );
-      
-      // 4. Preload active trades
-      const tradesQuery = query(
-        collection(db, 'trades'),
-        where('groupId', '==', groupId),
-        where('status', '==', 'pending'),
-        where('participantIds', 'array-contains', userId),
-        limit(10)
-      );
-      
-      preloadPromises.push(
-        getCachedQuery(tradesQuery, {
-          ttl: CACHE_TTL.TRADE_DATA,
-          cacheKey: `trades_active_${userId}_${groupId}_preload`
-        })
-      );
-    }
-    
-    // Execute all preloads in parallel
-    await Promise.all(preloadPromises);
-    console.log('Essential user data preloaded successfully');
-    
-    // Preload non-essential data in the background with a delay
-    setTimeout(() => {
-      preloadNonEssentialData(userId, groupId)
-        .catch(err => console.error('Error preloading non-essential data:', err));
-    }, 3000);
-    
-  } catch (error) {
-    console.error('Error preloading user data:', error);
-  }
+  // Fallback to unified bootstrap service
+  return await UnifiedBootstrapService.performUnifiedBootstrap(userId, groupId, {
+    prefetchUserCards: true,
+    prefetchActiveAuctions: true,
+    prefetchActiveTrades: false
+  });
 };
 
-// Preload non-essential data in the background
+// DEPRECATED: Moved to UnifiedBootstrapService background loading
 const preloadNonEssentialData = async (userId, groupId) => {
-  if (!userId || !groupId) return;
-  
-  console.log('Preloading non-essential data in background...');
-  
-  try {
-    // 1. Preload user preferences
-    await getCachedDoc('userPreferences', userId, { ttl: CACHE_TTL.USER_PREFERENCES });
-    
-    // 2. Preload group details
-    await getCachedDoc('groups', groupId, { ttl: CACHE_TTL.GROUP_DATA });
-    
-    // 3. Preload recent activity
-    const activityQuery = query(
-      collection(db, 'activity'),
-      where('groupId', '==', groupId),
-      orderBy('timestamp', 'desc'),
-      limit(10)
-    );
-    
-    await getCachedQuery(activityQuery, { ttl: CACHE_TTL.GROUP_ACTIVITY });
-    
-    console.log('Non-essential data preloaded successfully');
-  } catch (error) {
-    console.error('Error preloading non-essential data:', error);
-  }
+  console.warn('preloadNonEssentialData is deprecated. Use UnifiedBootstrapService background loading instead.');
+  return null;
 };
 
-// Maintenance function to optimize cache storage
+// DEPRECATED: Use UnifiedBootstrapService.performCacheMaintenance instead
 export const performCacheMaintenance = async () => {
-  console.log('Performing cache maintenance...');
-  
-  try {
-    // Clear expired cache entries
-    const clearedCount = await clearExpiredCache();
-    console.log(`Cleared ${clearedCount} expired cache entries`);
-    
-    // Log cache statistics
-    const metrics = getCacheMetrics();
-    console.log('Cache metrics:', metrics);
-    
-    return {
-      clearedCount,
-      metrics
-    };
-  } catch (error) {
-    console.error('Error performing cache maintenance:', error);
-    return {
-      error: error.message,
-      clearedCount: 0
-    };
-  }
+  console.warn('performCacheMaintenance is deprecated. Use UnifiedBootstrapService.performCacheMaintenance instead.');
+  return await UnifiedBootstrapService.performCacheMaintenance();
 };
 
 /**

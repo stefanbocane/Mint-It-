@@ -1,7 +1,7 @@
 import { useEffect } from 'react';
 import { Image, StyleSheet, View } from 'react-native';
 import { Surface } from 'react-native-paper';
-import theme from '../theme';
+import { useTheme } from '../contexts/ThemeContext';
 
 const BORDER_RADIUS = 20;
 
@@ -11,6 +11,7 @@ const MintingAnimation = ({
   onComplete,
   style 
 }) => {
+  const { theme } = useTheme();
   useEffect(() => {
     if (!imageUrl || !rarity) {
       onComplete?.();
@@ -29,10 +30,10 @@ const MintingAnimation = ({
     if (!rarity) return 'rgba(102, 102, 102, 0.3)';
     
     const rarityColors = {
-      common: theme.colors.rarity.common,
-      rare: theme.colors.rarity.rare,
-      epic: theme.colors.rarity.epic,
-      legendary: theme.colors.rarity.legendary,
+      common: '#9CA3AF',
+      rare: '#3B82F6',
+      epic: '#8B5CF6',
+      legendary: '#F59E0B',
     };
 
     return rarityColors[rarity.toLowerCase()] || rarityColors.common;

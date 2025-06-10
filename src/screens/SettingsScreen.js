@@ -1,53 +1,19 @@
-import { BlurView } from 'expo-blur';
 import { signOut, updateProfile } from 'firebase/auth';
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { Alert, ScrollView, StyleSheet, View } from 'react-native';
-import { Button, IconButton, Surface, Switch, Text, TextInput } from 'react-native-paper';
-import BalanceDisplay from '../components/BalanceDisplay';
+import { Appbar, Button, IconButton, Surface, Text, TextInput, useTheme } from 'react-native-paper';
 import ScreenBackground from '../components/ScreenBackground';
 import { auth } from '../config/firebase';
-import { CACHE_TTL } from '../constants/cacheConfig';
 import { useAuth } from '../contexts/AuthContext';
-import { useBalance } from '../contexts/BalanceContext';
 import { useGroup } from '../contexts/GroupContext';
 import { batchUpdateWithCache } from '../utils/dbOptimizationUtils';
-import { getCachedDoc } from '../utils/firestoreUtils';
 
 const SettingsScreen = ({ navigation }) => {
   const { user } = useAuth();
-  const { balance } = useBalance();
   const { currentGroup } = useGroup();
+  const theme = useTheme();
   const [displayName, setDisplayName] = useState(user?.displayName || '');
   const [isEditing, setIsEditing] = useState(false);
-  const [notificationsEnabled, setNotificationsEnabled] = useState(true);
-  const [loading, setLoading] = useState(true);
-  
-  // Load user preferences when component mounts
-  useEffect(() => {
-    const loadUserPreferences = async () => {
-      if (!user) return;
-      
-      try {
-        setLoading(true);
-        // Use cached document with TTL from config
-        const userData = await getCachedDoc('users', user.uid, { 
-          ttl: CACHE_TTL.USER_PREFERENCES,
-          forceRefresh: false // Only fetch from server if cache is expired
-        });
-        
-        if (userData) {
-          // Load notification preference, defaulting to true if not set
-          setNotificationsEnabled(userData.notificationsEnabled !== false);
-        }
-      } catch (error) {
-        console.error('Error loading user preferences:', error);
-      } finally {
-        setLoading(false);
-      }
-    };
-    
-    loadUserPreferences();
-  }, [user]);
 
   const handleLogout = async () => {
     try {
@@ -86,170 +52,163 @@ const SettingsScreen = ({ navigation }) => {
     }
   };
 
-  const toggleNotifications = async () => {
-    if (!user) return;
-    
-    try {
-      const newNotificationState = !notificationsEnabled;
-      setNotificationsEnabled(newNotificationState);
-      
-      // Use batch update utility which also updates cache
-      await batchUpdateWithCache([{
-        collection: 'users',
-        id: user.uid,
-        data: {
-          notificationsEnabled: newNotificationState,
-          updatedAt: new Date().toISOString(),
-        }
-      }]);
-      
-      console.log(`Notifications ${newNotificationState ? 'enabled' : 'disabled'} for user ${user.uid}`);
-    } catch (error) {
-      console.error('Error updating notification preferences:', error);
-      // Revert UI state if update fails
-      setNotificationsEnabled(notificationsEnabled);
-      Alert.alert('Error', 'Failed to update notification preferences');
-    }
+  const handleBackToSocialHub = () => {
+    navigation.navigate('SocialHub');
+  };
+
+  const handleViewTerms = () => {
+    navigation.navigate('TermsAndConditions');
+  };
+
+  const handleViewPrivacy = () => {
+    navigation.navigate('PrivacyPolicy');
   };
 
   return (
     <ScreenBackground>
-      <ScrollView style={styles.container}>
-        <BlurView intensity={85} tint="light" style={styles.blurContainer}>
-          <Surface style={[styles.profileSection, styles.translucentSurface]}>
-            {isEditing ? (
-              <View style={styles.editContainer}>
-                <TextInput
-                  label="Display Name"
-                  value={displayName}
-                  onChangeText={setDisplayName}
-                  style={styles.input}
+      <Appbar.Header style={[styles.header, { backgroundColor: theme.colors.surface }]}>
+        <Appbar.BackAction 
+          onPress={handleBackToSocialHub} 
+          iconColor={theme.colors.primary}
+        />
+        <Appbar.Content title="Settings" titleStyle={{ color: theme.colors.onSurface }} />
+      </Appbar.Header>
+      
+      <ScrollView style={styles.container} contentContainerStyle={styles.content}>
+        <Surface style={[styles.section, { backgroundColor: theme.colors.surface }]}>
+          <Text style={[styles.sectionTitle, { color: theme.colors.onSurface }]}>Profile</Text>
+          {isEditing ? (
+            <View style={styles.editContainer}>
+              <TextInput
+                label="Display Name"
+                value={displayName}
+                onChangeText={setDisplayName}
+                style={styles.input}
+                mode="outlined"
+              />
+              <View style={styles.editActions}>
+                <Button 
+                  mode="contained" 
+                  onPress={handleSaveProfile}
+                  style={styles.actionButton}
+                >
+                  Save
+                </Button>
+                <Button 
+                  mode="outlined" 
+                  onPress={() => setIsEditing(false)}
+                  style={styles.actionButton}
+                >
+                  Cancel
+                </Button>
+              </View>
+            </View>
+          ) : (
+            <View style={styles.profileInfo}>
+              <View style={styles.nameContainer}>
+                <Text style={[styles.displayName, { color: theme.colors.onSurface }]}>
+                  {displayName || 'Anonymous User'}
+                </Text>
+                <IconButton 
+                  icon="pencil" 
+                  size={20} 
+                  onPress={() => setIsEditing(true)} 
+                  iconColor={theme.colors.primary}
                 />
-                <View style={styles.editActions}>
-                  <Button 
-                    mode="contained" 
-                    onPress={handleSaveProfile}
-                    style={styles.saveButton}
-                  >
-                    Save
-                  </Button>
-                  <Button 
-                    mode="outlined" 
-                    onPress={() => setIsEditing(false)}
-                    style={styles.cancelButton}
-                  >
-                    Cancel
-                  </Button>
-                </View>
               </View>
-            ) : (
-              <View style={styles.profileInfo}>
-                <View style={styles.nameContainer}>
-                  <Text style={styles.displayName}>{displayName || 'Anonymous User'}</Text>
-                  <IconButton 
-                    icon="pencil" 
-                    size={20} 
-                    onPress={() => setIsEditing(true)} 
-                  />
-                </View>
-                <Text style={styles.email}>{user?.email}</Text>
-              </View>
-            )}
-          </Surface>
-
-          <Surface style={[styles.section, styles.translucentSurface]}>
-            <Text style={styles.sectionTitle}>Notifications</Text>
-            <View style={styles.settingRow}>
-              <Text>Receive Notifications</Text>
-              <Switch value={notificationsEnabled} onValueChange={toggleNotifications} />
+              <Text style={[styles.email, { color: theme.colors.onSurfaceVariant }]}>
+                {user?.email}
+              </Text>
             </View>
-          </Surface>
+          )}
+        </Surface>
 
-          <Surface style={[styles.section, styles.translucentSurface]}>
-            <Text style={styles.sectionTitle}>Account</Text>
-            <Button 
-              mode="contained" 
-              onPress={handleLogout} 
-              style={styles.logoutButton}
-              icon="logout"
-            >
-              Log Out
-            </Button>
-          </Surface>
+        <Surface style={[styles.section, { backgroundColor: theme.colors.surface }]}>
+          <Text style={[styles.sectionTitle, { color: theme.colors.onSurface }]}>Legal</Text>
+          <Button 
+            mode="contained-tonal" 
+            onPress={handleViewTerms} 
+            style={styles.actionButton}
+            icon="file-document-outline"
+          >
+            Terms & Conditions
+          </Button>
+          <Button 
+            mode="contained-tonal" 
+            onPress={handleViewPrivacy} 
+            style={[styles.actionButton, styles.buttonSpacing]}
+            icon="shield-account-outline"
+          >
+            Privacy Policy
+          </Button>
+        </Surface>
 
-          <Surface style={[styles.section, styles.translucentSurface]}>
-            <Text style={styles.sectionTitle}>Balance</Text>
-            <View style={styles.balanceContainer}>
-              <Text style={styles.balanceLabel}>Current Balance: </Text>
-              <BalanceDisplay showLabel={false} showRefreshButton={true} />
-            </View>
-          </Surface>
+        <Surface style={[styles.section, { backgroundColor: theme.colors.surface }]}>
+          <Text style={[styles.sectionTitle, { color: theme.colors.onSurface }]}>Account</Text>
+          <Button 
+            mode="contained" 
+            onPress={handleLogout} 
+            style={[styles.actionButton, { backgroundColor: theme.colors.error }]}
+            icon="logout"
+            textColor={theme.colors.onError}
+          >
+            Log Out
+          </Button>
+        </Surface>
 
-          <Surface style={[styles.section, styles.translucentSurface]}>
-            <Text style={styles.sectionTitle}>Advanced</Text>
-            <Button 
-              mode="contained-tonal" 
-              onPress={() => navigation.navigate('SystemOptimization')} 
-              style={styles.advancedButton}
-              icon="tune"
-            >
-              System Optimization
-            </Button>
-          </Surface>
-
-          <View style={styles.versionContainer}>
-            <Text style={styles.versionText}>Version 1.0.0</Text>
-          </View>
-        </BlurView>
+        <View style={styles.versionContainer}>
+          <Text style={[styles.versionText, { color: theme.colors.onSurfaceVariant }]}>
+            Version 1.0.0
+          </Text>
+        </View>
       </ScrollView>
     </ScreenBackground>
   );
 };
 
 const styles = StyleSheet.create({
+  header: {
+    elevation: 2,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 3,
+  },
   container: {
     flex: 1,
   },
-  blurContainer: {
-    flex: 1,
-    padding: 10,
+  content: {
+    padding: 16,
+    gap: 16,
   },
-  profileSection: {
-    margin: 20,
+  section: {
     padding: 20,
     borderRadius: 12,
-    alignItems: 'center',
+    elevation: 1,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 2,
   },
-  translucentSurface: {
-    backgroundColor: 'rgba(255, 255, 255, 0.7)',
-    borderColor: 'rgba(255, 255, 255, 0.8)',
-    borderWidth: 1,
-    shadowColor: "#000",
-    shadowOffset: {
-      width: 0,
-      height: 2,
-    },
-    shadowOpacity: 0.1,
-    shadowRadius: 3.84,
-    elevation: 5,
+  sectionTitle: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    marginBottom: 16,
   },
   profileInfo: {
     alignItems: 'center',
-    width: '100%',
   },
   nameContainer: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
+    marginBottom: 8,
   },
   displayName: {
-    fontSize: 22,
+    fontSize: 20,
     fontWeight: 'bold',
   },
   email: {
     fontSize: 16,
-    color: '#666',
-    marginTop: 8,
   },
   editContainer: {
     width: '100%',
@@ -259,53 +218,20 @@ const styles = StyleSheet.create({
   },
   editActions: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
+    gap: 12,
   },
-  saveButton: {
+  actionButton: {
     flex: 1,
-    marginRight: 8,
   },
-  cancelButton: {
-    flex: 1,
-    marginLeft: 8,
-  },
-  section: {
-    margin: 20,
-    padding: 20,
-    borderRadius: 12,
-  },
-  sectionTitle: {
-    fontSize: 18,
-    fontWeight: 'bold',
-    marginBottom: 16,
-  },
-  settingRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingVertical: 8,
-  },
-  logoutButton: {
-    backgroundColor: '#F44336',
+  buttonSpacing: {
+    marginTop: 12,
   },
   versionContainer: {
     padding: 16,
     alignItems: 'center',
   },
   versionText: {
-    color: '#999',
-  },
-  balanceContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 16,
-  },
-  balanceLabel: {
-    fontSize: 16,
-    marginRight: 8,
-  },
-  advancedButton: {
-    backgroundColor: '#2196F3',
+    fontSize: 14,
   },
 });
 
