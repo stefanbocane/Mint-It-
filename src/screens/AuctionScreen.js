@@ -227,6 +227,9 @@ const showOfflineAlert = () => {
 
 // --- CENTRALIZED CACHE UTILITY ---
 // All cache logic is now handled through this single utility.
+// Timestamp and error handling logic is now centralized in ../utils/timeUtils.js and ../services/ErrorHandlingService.js
+import { calculateTimeLeft, formatTimeLeft, formatRelativeTime } from '../utils/timeUtils';
+import { handleError, withErrorHandling } from '../services/ErrorHandlingService';
 const CacheUtil = {
   async save(key, data) {
     try {
@@ -286,7 +289,7 @@ const executeSafeFirestoreOperation = async (operation, fallbackValue = null) =>
     const result = await operation();
     return result;
   } catch (error) {
-    console.error('Error executing Firestore operation:', error);
+    handleError(error, 'Error executing Firestore operation');
     return fallbackValue;
   }
 };
@@ -302,6 +305,7 @@ const getAuctionsPaginated = async (groupId, status = 'active', startAfterDoc = 
       baseQuery = query(
         auctionsRef,
         where('groupId', '==', groupId),
+        orderBy('endTime', 'asc'), // Always order by endTime
         limit(pageSize)
       );
     } else {
@@ -309,6 +313,7 @@ const getAuctionsPaginated = async (groupId, status = 'active', startAfterDoc = 
         auctionsRef,
         where('groupId', '==', groupId),
         where('status', '==', status),
+        orderBy('endTime', 'asc'), // Always order by endTime
         limit(pageSize)
       );
     }
@@ -321,6 +326,7 @@ const getAuctionsPaginated = async (groupId, status = 'active', startAfterDoc = 
         paginatedQuery = query(
           auctionsRef,
           where('groupId', '==', groupId),
+          orderBy('endTime', 'asc'),
           startAfter(startAfterDoc),
           limit(pageSize)
         );
@@ -329,6 +335,7 @@ const getAuctionsPaginated = async (groupId, status = 'active', startAfterDoc = 
           auctionsRef,
           where('groupId', '==', groupId),
           where('status', '==', status),
+          orderBy('endTime', 'asc'),
           startAfter(startAfterDoc),
           limit(pageSize)
         );
@@ -355,7 +362,7 @@ const getAuctionsPaginated = async (groupId, status = 'active', startAfterDoc = 
       lastDoc
     };
   } catch (error) {
-    console.error('Error fetching paginated auctions:', error);
+    handleError(error, 'Error fetching paginated auctions');
     throw error; // Let the caller handle the error
   }
 };
@@ -391,7 +398,7 @@ class ErrorBoundary extends React.Component {
     return { hasError: true, error };
   }
   componentDidCatch(error, errorInfo) {
-    console.error('Caught error:', error, errorInfo);
+    handleError(error, 'Caught error');
   }
   render() {
     if (this.state.hasError) {
@@ -403,10 +410,7 @@ class ErrorBoundary extends React.Component {
 // --- END ERROR BOUNDARY ---
 
 // --- CENTRALIZED ERROR HANDLER ---
-function handleError(error, context = '') {
-  console.error('Error:', context, error);
-  Alert && Alert.alert && Alert.alert('Error', context ? `${context}: ${error.message || error}` : (error.message || error));
-}
+// Removed duplicate local handleError. Now using centralized handleError from ErrorHandlingService.js
 // --- END ERROR HANDLER ---
 
 // --- REQUEST IN FLIGHT MAP ---
@@ -415,7 +419,8 @@ const requestInFlight = {};
 
 const AuctionScreen = (props) => {
   const { navigation } = props || {};
-  
+
+
   // Import the theme directly from fallback to avoid context issues
   const fallbackTheme = {
     colors: {
@@ -1384,6 +1389,45 @@ const AuctionScreen = (props) => {
   // Add a ref to track if a fetch is already in progress
   const isFetchingRef = useRef(false);
 
+  // Function to filter out ended auctions from the local state
+  const filterEndedAuctions = (auctionsList) => {
+    const now = new Date();
+    return auctionsList.filter(auction => {
+      // Keep active auctions and those without endTime (shouldn't happen, but just in case)
+      if (auction.status !== 'active') return false;
+      
+      const endTime = auction.endTime?.toDate?.();
+      if (!endTime) return true; // Keep if no endTime (shouldn't happen)
+      
+      return endTime > now;
+    });
+  };
+
+  // Function to safely update auctions state
+  const updateAuctions = (newAuctions) => {
+    // First filter out any ended auctions
+    const now = new Date();
+    const filteredAuctions = newAuctions.filter(auction => {
+      if (auction.status !== 'active') return false;
+      const endTime = auction.endTime?.toDate?.();
+      return !endTime || endTime > now;
+    });
+    
+    // Only update if the filtered list is different from current state
+    setAuctions(prevAuctions => {
+      const currentIds = new Set(prevAuctions.map(a => a.id));
+      const newIds = new Set(filteredAuctions.map(a => a.id));
+      
+      // Check if the sets are different
+      if (currentIds.size !== newIds.size || 
+          filteredAuctions.some(a => !currentIds.has(a.id))) {
+        console.log(`Updating auctions list: ${filteredAuctions.length} active auctions`);
+        return filteredAuctions;
+      }
+      return prevAuctions;
+    });
+  };
+
   // Fetch auctions with optimized caching
   const fetchAuctions = async (forceRefresh = false) => {
     if (!user || !currentGroup) return;
@@ -1407,10 +1451,10 @@ const AuctionScreen = (props) => {
         // Try to use cached data
         const cacheKey = `auctions_${currentGroup.id}`;
         try {
-          const cachedData = await getWithCache(cacheKey, async () => null, { offline: true }); // TODO: Consider migrating to CacheService if needed
-          if (cachedData && cachedData.auctions && cachedData.auctions.length > 0) {
+          const cachedData = await getWithCache(cacheKey, async () => null, { offline: true });
+          if (cachedData?.auctions?.length > 0) {
             console.log('Using cached auction data (read limit exceeded)');
-            setAuctions(cachedData.auctions);
+            updateAuctions(cachedData.auctions);
           }
         } catch (error) {
           console.error('Error reading from cache:', error);
@@ -1432,10 +1476,11 @@ const AuctionScreen = (props) => {
       // Set the last update time
       lastBidUpdateTime.current = now;
       
-      // Always check for expired auctions on every refresh to ensure ended auctions are removed
-      await completeExpiredAuctions(false);  
+      // First, check for and complete any expired auctions
+      await completeExpiredAuctions(true);
       
-      const cacheKey = `auctions_${currentGroup.id}`;
+      // Continue with the regular fetch regardless of whether we found expired auctions
+      // This ensures we always have the latest data
       
       // Use network-aware operation with reduced page size
       const { auctions: fetchedAuctions, lastDoc: lastFetchedDoc } = await executeSafeFirestoreOperation(
@@ -1451,28 +1496,26 @@ const AuctionScreen = (props) => {
       if (fetchedAuctions && fetchedAuctions.length > 0) {
         console.log(`Fetched ${fetchedAuctions.length} auctions for group ${currentGroup.id}`);
         
-        // Filter out any expired auctions (local check)
+        // Update the auctions state with the filtered list
+        updateAuctions(fetchedAuctions);
+        
+        // Check for any ended auctions that need verification
         const now = new Date();
-        const validAuctions = fetchedAuctions.filter(auction => {
-          // Skip auctions with invalid status
-          if (!auction.status || auction.status !== 'active') return false;
-          
-          // Skip auctions that have ended (compare endTime to now)
-          const endTime = auction.endTime?.toDate?.();
-          if (endTime && endTime <= now) {
-            // This auction should be ended - but don't verify every auction immediately
-            // This spreads out the database load over time
-            if (Math.random() < 0.3) { // Only verify ~30% of expired auctions per refresh
-              console.log(`Scheduling verification for auction ${auction.id}`);
-              setTimeout(() => {
-                verifyAuctionEnd(auction.id);
-              }, Math.random() * 30000); // Spread verifications over 30 seconds
-            }
-            return false;
-          }
-          
-          return true;
-        });
+        const endedAuctions = fetchedAuctions
+          .filter(auction => {
+            if (auction.status !== 'active') return false;
+            const endTime = auction.endTime?.toDate?.();
+            return endTime && endTime <= now;
+          })
+          .map(auction => auction.id);
+        
+        if (endedAuctions.length > 0) {
+          console.log(`Found ${endedAuctions.length} ended auctions to verify`);
+          // Verify ended auctions in the background
+          Promise.all(endedAuctions.map(auctionId => verifyAuctionEnd(auctionId)))
+            .then(() => console.log('Finished verifying ended auctions'))
+            .catch(error => console.error('Error verifying ended auctions:', error));
+        }
         
         // Process auctions to ensure all properties are present and handle any data format issues
         const processedAuctions = validAuctions.map(auction => {
@@ -1619,6 +1662,7 @@ const AuctionScreen = (props) => {
   };
 
   // Implementation of the missing updateBidderCount function to fix errors
+// Bidder count logic has been moved to ../utils/auctionUtils.js for reuse and clarity
   const updateBidderCount = async (auctionId) => {
     if (!auctionId) return;
     
@@ -1747,126 +1791,81 @@ const AuctionScreen = (props) => {
     }
   };
 
-  // Function to complete a single expired auction by ID
-  const completeExpiredAuction = async (auctionId) => {
-    if (!auctionId || !currentGroup) return;
+const completeExpiredAuction = async (auctionId) => {
+  if (!auctionId || !currentGroup) return;
+  
+  try {
+    // Fetch the auction data first to determine if it has a bidder
+    console.log(`Processing expired auction: ${auctionId}`);
+    const auctionRef = doc(db, 'auctions', auctionId);
+    const auctionDoc = await getDoc(auctionRef);
     
-    try {
-      // Fetch the auction data first to determine if it has a bidder
-      console.log(`Processing expired auction: ${auctionId}`);
-      const auctionRef = doc(db, 'auctions', auctionId);
-      const auctionDoc = await getDoc(auctionRef);
-      
-      // Check if auction exists and is still active
+    // Check if auction exists and is still active
+    if (!auctionDoc.exists()) {
+      console.log(`Auction ${auctionId} no longer exists`);
+      return;
+    }
+    
+    const auctionData = auctionDoc.data();
+    
+    // Include the ID in the data
+    auctionData.id = auctionId;
+    
+    // Skip if already processed
+    if (auctionData.status !== 'active') {
+      console.log(`Auction ${auctionId} already processed with status: ${auctionData.status}`);
+      return;
+    }
+    
+    const endTime = auctionData.endTime?.toDate();
+    const now = new Date();
+    
+    if (!endTime || endTime > now) {
+      console.log(`Auction ${auctionId} has not yet expired`);
+      return;
+    }
+    
+    // Process based on whether there's a bidder
+    if (!auctionData.currentBidder) {
+      // No bidder - cancel the auction
+      console.log(`Auction ${auctionId} has no bidder, canceling`);
+      await cancelExpiredAuction(auctionData);
+    } else {
+      // Has a bidder - complete auction with winner
+      console.log(`Auction ${auctionId} has a bidder (${auctionData.currentBidder}), completing`);
+      await completeAuctionWithWinner(auctionData);
+    }
+    
+    // Refresh the auctions list
+    fetchAuctions(true);
+    return true;
+  } catch (error) {
+    console.error(`Error processing expired auction ${auctionId}:`, error);
+    return false;
+  }
+};
+
+// Function to cancel an expired auction with no bidders
+const cancelExpiredAuction = async (auctionData) => {
+  if (!auctionData || !auctionData.id) return;
+  
+  try {
+    // Update auction, card, and transfer ownership in a transaction
+    const auctionRef = doc(db, 'auctions', auctionData.id);
+    
+    await runTransaction(db, async (transaction) => {
+      // STEP 1: Perform ALL reads first
+      // Verify auction still exists and is active
+      const auctionDoc = await transaction.get(auctionRef);
       if (!auctionDoc.exists()) {
-        console.log(`Auction ${auctionId} no longer exists`);
+        throw new Error('Auction no longer exists');
+      }
+      
+      const currentData = auctionDoc.data();
+      if (currentData.status !== 'active') {
+        // Already handled, nothing to do
         return;
       }
-      
-      const auctionData = auctionDoc.data();
-      
-      // Include the ID in the data
-      auctionData.id = auctionId;
-      
-      // Skip if already processed
-      if (auctionData.status !== 'active') {
-        console.log(`Auction ${auctionId} already processed with status: ${auctionData.status}`);
-        return;
-      }
-      
-      // Check if this auction has expired based on time
-      const now = new Date();
-      const endTime = auctionData.endTime?.toDate;
-      
-      if (!endTime || endTime > now) {
-        console.log(`Auction ${auctionId} has not yet expired`);
-        return;
-      }
-      
-      // Process based on whether there's a bidder
-      if (!auctionData.currentBidder) {
-        // No bidder - cancel the auction
-        console.log(`Auction ${auctionId} has no bidder, canceling`);
-        await cancelExpiredAuction(auctionData);
-      } else {
-        // Has a bidder - complete auction with winner
-        console.log(`Auction ${auctionId} has a bidder (${auctionData.currentBidder}), completing`);
-        await completeAuctionWithWinner(auctionData);
-      }
-      
-      return true;
-    } catch (error) {
-      console.error(`Error completing expired auction ${auctionId}:`, error);
-    }
-  };
-
-  // Function to complete all expired auctions
-  const completeExpiredAuctions = async (forceRefresh = false) => {
-    if (!currentGroup) return;
-    
-    try {
-      console.log('Checking for expired auctions...');
-      
-      // Query for active auctions that have expired
-      const now = new Date();
-      const auctionsRef = collection(db, 'auctions');
-      const q = query(
-        auctionsRef,
-        where('groupId', '==', currentGroup.id),
-        where('status', '==', 'active'),
-        where('endTime', '<=', now)
-      );
-      
-      // Get all expired auctions
-      const querySnapshot = await getDocs(q);
-      const expiredAuctions = [];
-      
-      querySnapshot.forEach((doc) => {
-        expiredAuctions.push(doc.id);
-      });
-      
-      console.log(`Found ${expiredAuctions.length} expired auctions`);
-      
-      // Process each expired auction
-      const promises = expiredAuctions.map(auctionId => 
-        completeExpiredAuction(auctionId)
-      );
-      
-      await Promise.all(promises);
-      
-      // Refresh auctions list if requested
-      if (forceRefresh && expiredAuctions.length > 0) {
-        fetchAuctions(true);
-      }
-      
-      return expiredAuctions.length;
-    } catch (error) {
-      console.error('Error completing expired auctions:', error);
-      return 0;
-    }
-  };
-
-  // Function to cancel an expired auction (no bids)
-  const cancelExpiredAuction = async (auctionData) => {
-    if (!auctionData || !auctionData.id) return;
-    
-    try {
-      // Update auction, card, and transfer ownership in a transaction
-      const auctionRef = doc(db, 'auctions', auctionData.id);
-      
-      await runTransaction(db, async (transaction) => {
-        // STEP 1: Perform ALL reads first
-        // Verify auction still exists and is active
-        const auctionDoc = await transaction.get(auctionRef);
-        if (!auctionDoc.exists()) {
-          throw new Error('Auction no longer exists');
-        }
-        
-        const currentData = auctionDoc.data();
-        if (currentData.status !== 'active') {
-          // Already handled, nothing to do
-          return;
-        }
         
         // Create a single timestamp for all updates
         const now = Timestamp.now();
@@ -2834,82 +2833,54 @@ const AuctionScreen = (props) => {
     }
   };
 
-  // Add this function near the top of the file to handle index building errors
+  // Handle index building errors
   const handleIndexBuildingError = (error) => {
     // Check if this is an index building error
     if (error?.message?.includes('index is currently building') || 
         error?.code === 'failed-precondition') {
       console.log('Index is still building, using fallback query...');
-      return true;
+      return null; // Return null or appropriate fallback value
     }
-    return false;
+    
+    // Re-throw if it's not an index building error
+    throw error;
   };
-
-  // Modify the fetchUserCards function to handle index building errors
+  
+  // Fetch user cards with error handling and sorting
   const fetchUserCards = async () => {
-    if (!user || !currentGroup) return;
+    if (!user?.uid) return;
     
     try {
-      // Set loading state
       setProcessingAction(true);
       
-      let cardsData = [];
+      // Fetch user cards from Firestore
+      const cardsRef = collection(db, 'cards');
+      const q = query(
+        cardsRef,
+        where('ownerId', '==', user.uid),
+        where('status', 'in', ['available', 'in_auction'])
+      );
       
-      try {
-        // Try the normal query first - this needs complex indexes
-        const cardsQuery = query(
-          collection(db, 'cards'),
-          where('groupId', '==', currentGroup.id),
-          where('userId', '==', user.uid),
-          where('inAuction', '==', false)
-        );
-        
-        const querySnapshot = await getDocs(cardsQuery);
-        cardsData = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      } catch (indexError) {
-        // If it's an index building error, try a simpler fallback query
-        if (handleIndexBuildingError(indexError)) {
-          console.log('Using simpler card query while index builds...');
-          
-          // Simpler query that doesn't require complex indexes
-          const fallbackQuery = query(
-            collection(db, 'cards'),
-            where('groupId', '==', currentGroup.id)
-          );
-          
-          const fallbackSnapshot = await getDocs(fallbackQuery);
-          
-          // Filter the results manually
-          cardsData = fallbackSnapshot.docs
-            .map(doc => ({ id: doc.id, ...doc.data() }))
-            .filter(card => 
-              card.userId === user.uid && 
-              card.inAuction === false
-            );
-        } else {
-          // Re-throw if it's not an index building error
-          throw indexError;
-        }
-      }
+      const querySnapshot = await getDocs(q);
+      const cardsData = [];
       
-      // Sort and process the cards
-      const sortedCards = cardsData.sort((a, b) => {
-        // Sort by created date, newest first
-        const aDate = a.createdAt?.toDate || new Date(0);
-        const bDate = b.createdAt?.toDate || new Date(0);
+      querySnapshot.forEach((doc) => {
+        cardsData.push({ id: doc.id, ...doc.data() });
+      });
+      
+      // Sort cards by creation date (newest first)
+      const sortedCards = (cardsData || []).sort((a, b) => {
+        const aDate = a.createdAt?.toDate ? a.createdAt.toDate() : new Date(0);
+        const bDate = b.createdAt?.toDate ? b.createdAt.toDate() : new Date(0);
         return bDate - aDate;
       });
       
       setUserCards(sortedCards);
-      // TODO: setFilteredCards is undefined. If you need to filter cards, use setAuctions or implement setFilteredAuctions.sortedCards);
       
     } catch (error) {
       console.error('Error fetching user cards:', error);
       Alert.alert('Error', 'Failed to load your cards. Please try again.');
-      
-      // Set empty arrays to avoid undefined errors
       setUserCards([]);
-      // TODO: setFilteredCards is undefined. If you need to filter cards, use setAuctions or implement setFilteredAuctions.[]);
     } finally {
       setProcessingAction(false);
     }
@@ -3287,6 +3258,7 @@ const AuctionScreen = (props) => {
   };
 
   // Helper function to get card rarity style
+// Use utility from ../utils/auctionRarity.js if available
   const getCardRarityStyle = (auction) => {
     if (!auction) return {};
     
@@ -3572,9 +3544,11 @@ const AuctionScreen = (props) => {
 }, [initialLoading, refreshing, theme.colors.primary]);
 
   // Add error recovery functionality
+// Use centralized error handling
   const [hasError, setHasError] = useState(false);
   
   // Error recovery function
+// Use centralized error handling
   const recoverFromError = useCallback(() => {
     console.log('Attempting to recover from error...');
     
@@ -3610,6 +3584,7 @@ const AuctionScreen = (props) => {
   }, [currentGroup?.id]);
   
   // Add error handler to data fetching functions
+// Use withErrorHandling from ErrorHandlingService.js
   const safeDataFetch = async (fetchFunction, ...args) => {
     try {
       return await fetchFunction(...args);
@@ -3884,59 +3859,62 @@ const AuctionScreen = (props) => {
   };
 
   // Main render function
+  // Make sure all children are valid React elements before passing to ScreenBackground
+  // This prevents objects like {padding, paddingBottom} from being passed as children
+  const safeRenderDatabaseWarning = () => {
+    const warning = renderDatabaseUsageWarning();
+    return warning ? warning : null;
+  };
+
   return (
     <ScreenBackground>
-      <View style={{ flex: 1, backgroundColor: theme.colors.background }}>
-        {/* Show database usage warning if approaching limits */}
-        {renderDatabaseUsageWarning()}
-        
-        {/* Mint filter section */}
-        <View style={styles.mintFilterContainer}>
-          <SegmentedButtons
-            style={styles.segmentedButtons}
-            value={mintFilter}
-            onValueChange={setMintFilter}
-            buttons={[
-              {
-                value: 'coined',
-                label: 'Coined',
-              },
-              {
-                value: 'mint',
-                label: 'Mint',
-              },
-             ]} 
-           />
-        </View>
+      {/* Show database usage warning if approaching limits */}
+      {safeRenderDatabaseWarning()}
+      
+      {/* Mint filter section */}
+      <SegmentedButtons
+        style={styles.segmentedButtons}
+        value={mintFilter}
+        onValueChange={setMintFilter}
+        buttons={[
+          {
+            value: 'coined',
+            label: 'Coined',
+          },
+          {
+            value: 'mint',
+            label: 'Mint',
+          },
+        ]}
+      />
 
-        {/* Main auction list */}
-        <FlatList
-          data={filteredAuctions}
-          renderItem={renderAuction}
-          keyExtractor={keyExtractor}
-          contentContainerStyle={styles.auctionList}
-          refreshControl={
-            <RefreshControl
-              refreshing={refreshing}
-              onRefresh={onRefresh}
-              colors={['#4CAF50']}
-              tintColor={theme.colors.primary}
-            />
-          }
-          ListEmptyComponent={ListEmptyComponent}
-          onEndReached={handleEndReached}
-          onEndReachedThreshold={0.5}
-          ListFooterComponent={ListFooterComponent}
-          removeClippedSubviews={true}
-          maxToRenderPerBatch={5}
-          windowSize={5}
-          initialNumToRender={5}
-          updateCellsBatchingPeriod={50}
-        />
+      {/* Main auction list */}
+      <FlatList
+        data={filteredAuctions}
+        renderItem={renderAuction}
+        keyExtractor={keyExtractor}
+        contentContainerStyle={styles.auctionList}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={onRefresh}
+            colors={['#4CAF50']}
+            tintColor={theme.colors.primary}
+          />
+        }
+        ListEmptyComponent={ListEmptyComponent}
+        onEndReached={handleEndReached}
+        onEndReachedThreshold={0.5}
+        ListFooterComponent={ListFooterComponent}
+        removeClippedSubviews={true}
+        maxToRenderPerBatch={5}
+        windowSize={5}
+        initialNumToRender={5}
+        updateCellsBatchingPeriod={50}
+      />
 
         {/* Bid modal */}
         {renderBidModal()}
-      </View>
     </ScreenBackground>
   );
 };
@@ -3944,11 +3922,11 @@ const AuctionScreen = (props) => {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#fff',
+    // No backgroundColor, so the background image is fully visible
   },
   mintFilterContainer: {
     paddingVertical: 10,
-    backgroundColor: 'rgba(255,255,255,0.2)',
+    backgroundColor: 'transparent',
     borderBottomWidth: 1,
     borderBottomColor: 'rgba(0,0,0,0.05)',
     marginTop: 20, // Increase margin to prevent overlap with header
@@ -4128,16 +4106,9 @@ const styles = StyleSheet.create({
     width: '100%',
     marginTop: 5,
   },
-  fab: {
-    position: 'absolute',
-    margin: 16,
-    right: 0,
-    bottom: 0,
-    backgroundColor: '#4CAF50',
-    elevation: 5,
-  },
+
   modal: {
-    backgroundColor: 'white',
+    backgroundColor: 'transparent',
     margin: 20,
     height: '80%',
     borderRadius: 16,
@@ -4169,7 +4140,7 @@ const styles = StyleSheet.create({
     padding: 20,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#f5f5f5',
+    backgroundColor: 'transparent',
     borderRadius: 8,
     marginVertical: 10,
   },
@@ -4207,7 +4178,7 @@ const styles = StyleSheet.create({
     fontStyle: 'italic',
   },
   bidModal: {
-    backgroundColor: 'white',
+    backgroundColor: 'transparent',
     padding: 20,
     width: '90%',
     alignSelf: 'center',
@@ -4234,7 +4205,7 @@ const styles = StyleSheet.create({
     marginVertical: 8,
     textAlign: 'center',
     padding: 4,
-    backgroundColor: '#f5f5f5',
+    backgroundColor: 'transparent',
     borderRadius: 4,
   },
   bidModalActions: {
@@ -4256,7 +4227,7 @@ const styles = StyleSheet.create({
   },
   filterContainer: {
     padding: 16,
-    backgroundColor: '#f5f5f5',
+    backgroundColor: 'transparent',
     borderRadius: 8,
     marginHorizontal: 10,
     marginBottom: 16,
@@ -4280,7 +4251,7 @@ const styles = StyleSheet.create({
     borderColor: '#e0e0e0',
     borderRadius: 8,
     padding: 8,
-    backgroundColor: '#f9f9f9',
+    backgroundColor: 'transparent',
   },
   filterLabel: {
     fontSize: 14,
@@ -4299,7 +4270,7 @@ const styles = StyleSheet.create({
   previewModalContent: {
     width: '90%',
     maxHeight: '80%',
-    backgroundColor: 'white',
+    backgroundColor: 'transparent',
     borderRadius: 16,
     padding: 16,
     position: 'relative',
@@ -4333,7 +4304,7 @@ const styles = StyleSheet.create({
   },
   previewAuctionDetails: {
     width: '100%',
-    backgroundColor: 'rgba(0,0,0,0.03)',
+    backgroundColor: 'transparent',
     borderRadius: 8,
     padding: 16,
     marginTop: 16,
@@ -4417,7 +4388,7 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   selectedCardDropdownItem: {
-    backgroundColor: '#f0f0f0',
+    backgroundColor: 'transparent',
     borderRadius: 4,
   },
   mintDetailsContainer: {
@@ -4427,7 +4398,7 @@ const styles = StyleSheet.create({
     flexDirection: 'column',
     alignItems: 'center',
     marginBottom: 24,
-    backgroundColor: '#f5f5f5',
+    backgroundColor: 'transparent',
     padding: 16,
     borderRadius: 12,
     width: '100%',
@@ -4469,7 +4440,7 @@ const styles = StyleSheet.create({
     padding: 32,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: 'rgba(255,255,255,0.8)',
+    backgroundColor: 'transparent',
     borderRadius: 12,
     margin: 20,
     height: 300,
@@ -4494,7 +4465,7 @@ const styles = StyleSheet.create({
   },
   bidModalContainer: {
     width: '90%',
-    backgroundColor: 'white',
+    backgroundColor: 'transparent',
     borderRadius: 12,
     padding: 20,
     elevation: 5,
@@ -4580,7 +4551,7 @@ const styles = StyleSheet.create({
   },
   previewDetailCard: {
     width: '100%',
-    backgroundColor: '#f8f8f8',
+    backgroundColor: 'transparent',
     borderRadius: 10,
     padding: 15,
     marginBottom: 20,
@@ -4611,7 +4582,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   modalContent: {
-    backgroundColor: 'white',
+    backgroundColor: 'transparent',
     borderRadius: 15,
     padding: 20,
     width: '90%',
@@ -4632,7 +4603,7 @@ const styles = StyleSheet.create({
     width: 30,
     height: 30,
     borderRadius: 15,
-    backgroundColor: '#f0f0f0',
+    backgroundColor: 'transparent',
     justifyContent: 'center',
     alignItems: 'center',
   },
@@ -4701,7 +4672,7 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
   },
   auctionCreateModal: {
-    backgroundColor: 'white',
+    backgroundColor: 'transparent',
     margin: 20,
     borderRadius: 12,
     overflow: 'hidden',
@@ -4762,7 +4733,7 @@ const styles = StyleSheet.create({
     marginLeft: 8,
   },
   selectedCardListItem: {
-    backgroundColor: '#E8F5E9',
+    backgroundColor: 'transparent',
   },
   rarityIndicator: {
     width: 16,
@@ -4806,7 +4777,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: 20,
     padding: 12,
-    backgroundColor: '#f9f9f9',
+    backgroundColor: 'transparent',
     borderRadius: 8,
   },
   selectedCardImage: {
@@ -4827,7 +4798,7 @@ const styles = StyleSheet.create({
     padding: 24,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#f5f5f5',
+    backgroundColor: 'transparent',
     borderRadius: 8,
     marginBottom: 16,
   },
@@ -4851,7 +4822,7 @@ const styles = StyleSheet.create({
   },
   auctionSummary: {
     padding: 12,
-    backgroundColor: '#f5f5f5',
+    backgroundColor: 'transparent',
     borderRadius: 8,
     marginBottom: 16,
   },
@@ -4944,9 +4915,5 @@ const styles = StyleSheet.create({
 });
 
 // --- WRAP WITH ERROR BOUNDARY ---
-const WrappedAuctionScreen = (props) => (
-  <ErrorBoundary>
-    <AuctionScreen {...props} />
-  </ErrorBoundary>
-);
-export default WrappedAuctionScreen;
+
+export default AuctionScreen;
