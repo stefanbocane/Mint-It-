@@ -51,8 +51,12 @@ class UnifiedBootstrapService {
     try {
       console.log('🚀 Starting Unified Bootstrap Service...');
       
-      // PHASE 1: Critical Data (Must complete for app to function) - 3 reads instead of 23
-      const criticalData = await this.loadCriticalDataBatch(userId, groupId);
+      // PHASE 1: Critical Data (Must complete for app to function)
+      // Pass through any prefetched data to prevent duplicate reads
+      const criticalData = await this.loadCriticalDataBatch(userId, groupId, {
+        prefetchedUser: options.prefetchedUser,
+        prefetchedGroup: options.prefetchedGroup,
+      });
       BootPerformanceMonitor.recordOptimizationStep(
         'Critical Data Batch', 
         20, 
@@ -107,7 +111,7 @@ class UnifiedBootstrapService {
    * PHASE 1: Load critical data in single optimized batch
    * Uses denormalized userGroupData document to replace 12 separate reads
    */
-  async loadCriticalDataBatch(userId, groupId) {
+  async loadCriticalDataBatch(userId, groupId, options = {}) {
     console.log('📦 Loading critical data batch...');
     
     // Try to load denormalized user+group data first (ARCHITECTURAL IMPROVEMENT)
@@ -123,14 +127,20 @@ class UnifiedBootstrapService {
       return denormalizedData;
     }
 
-    // Fallback: Load user and group data in parallel (2 reads instead of 8)
-    const [userData, groupData] = await Promise.all([
-      this.loadOptimizedUserData(userId),
-      this.loadOptimizedGroupData(groupId)
-    ]);
+    // Fallback: Load user and group data in parallel (respecting any prefetched data)
+    const userDataPromise = options.prefetchedUser
+      ? Promise.resolve(options.prefetchedUser)
+      : this.loadOptimizedUserData(userId);
 
-    this.bootMetrics.totalReads += 2;
-    this.bootMetrics.parallelBatches++;
+    const groupDataPromise = options.prefetchedGroup
+      ? Promise.resolve(options.prefetchedGroup)
+      : this.loadOptimizedGroupData(groupId);
+
+    const [userData, groupData] = await Promise.all([userDataPromise, groupDataPromise]);
+
+    // Count reads only for the paths we actually hit
+    if (!options.prefetchedUser) this.bootMetrics.totalReads += 1;
+    if (!options.prefetchedGroup) this.bootMetrics.totalReads += 1;
 
     // Create denormalized data for future boots
     const criticalData = {
