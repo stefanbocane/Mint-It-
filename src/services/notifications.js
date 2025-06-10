@@ -69,11 +69,19 @@ export const registerForPushNotificationsAsync = async (userId) => {
   
   // Get the token
   try {
-    token = (await Notifications.getExpoPushTokenAsync({
-      projectId: undefined, // Use the default project if undefined
-    })).data;
+    // Get projectId from Constants or config
+    const projectId = Constants.expoConfig?.extra?.eas?.projectId || 
+                     Constants.manifest?.extra?.eas?.projectId ||
+                     Constants.expoConfig?.projectId ||
+                     Constants.expoConfig?.extra?.eas?.projectId;
     
-    console.log('Push notification token:', token);
+    const options = projectId ? { projectId } : {};
+    
+    console.log('Attempting to get push token with options:', { hasProjectId: !!projectId });
+    
+    token = (await Notifications.getExpoPushTokenAsync(options)).data;
+    
+    console.log('Push notification token obtained successfully:', token?.substring(0, 20) + '...');
     
     // Save the token to Firestore
     if (userId) {
@@ -283,9 +291,13 @@ export const registerForPushNotifications = async () => {
   let token;
   
   try {
-    // Get the token
+    // Get the token with fallback projectId
+    const projectId = Constants.expoConfig?.extra?.eas?.projectId || 
+                     Constants.expoConfig?.extra?.firebaseProjectId || 
+                     'cardmates-bca66'; // fallback to default project
+    
     token = await Notifications.getExpoPushTokenAsync({
-      projectId: Constants.expoConfig?.extra?.eas?.projectId,
+      projectId: projectId,
     });
     
     console.log('Expo push token:', token);

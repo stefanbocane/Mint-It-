@@ -1,16 +1,18 @@
 import { addDoc, collection, doc, setDoc } from 'firebase/firestore';
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { StyleSheet, View } from 'react-native';
-import { Appbar, Button, HelperText, Switch, Text, TextInput } from 'react-native-paper';
+import { Appbar, Button, HelperText, Switch, Text, TextInput, useTheme } from 'react-native-paper';
+import ScreenBackground from '../components/ScreenBackground';
 import { db } from '../config/firebase';
 import { useAuth } from '../contexts/AuthContext';
 import { useGroup } from '../contexts/GroupContext';
-import theme from '../theme';
 import { handleOneTimeInitialCoinAward } from '../utils/balanceUtils';
+import { checkGroupMembershipLimit } from '../utils/cardLimits';
 
 const CreateGroupScreen = ({ navigation }) => {
   const { user } = useAuth();
   const { refreshGroups, switchGroup } = useGroup();
+  const theme = useTheme();
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [isPrivate, setIsPrivate] = useState(false);
@@ -30,6 +32,13 @@ const CreateGroupScreen = ({ navigation }) => {
     try {
       setLoading(true);
       setError('');
+
+      // Check group membership limit first
+      const limitCheck = await checkGroupMembershipLimit(user.uid);
+      if (!limitCheck.canJoin) {
+        setError(`You have reached the maximum of ${limitCheck.limit} groups. You are currently in ${limitCheck.currentCount} groups.`);
+        return;
+      }
 
       // Create the group document
       const groupRef = await addDoc(collection(db, 'groups'), {
@@ -78,69 +87,77 @@ const CreateGroupScreen = ({ navigation }) => {
   };
 
   return (
-    <View style={styles.container}>
-      <Appbar.Header style={{ backgroundColor: 'rgba(255,255,255,0.2)', elevation: 0, borderBottomWidth: 1, borderBottomColor: 'rgba(0,0,0,0.05)' }}>
-        <Appbar.BackAction onPress={() => navigation.goBack()} />
-        <Appbar.Content title="Create Group" />
-      </Appbar.Header>
-
-      <View style={styles.content}>
-        <TextInput
-          label="Group Name"
-          value={name}
-          onChangeText={setName}
-          style={styles.input}
-          error={!!error && !name.trim()}
-        />
-
-        <TextInput
-          label="Description"
-          value={description}
-          onChangeText={setDescription}
-          multiline
-          numberOfLines={3}
-          style={styles.input}
-        />
-
-        <View style={styles.switchContainer}>
-          <Text>Private Group</Text>
-          <Switch
-            value={isPrivate}
-            onValueChange={setIsPrivate}
+    <ScreenBackground>
+      <View style={styles.container}>
+        <Appbar.Header style={styles.header}>
+          <Appbar.BackAction 
+            onPress={() => navigation.goBack()} 
+            iconColor={theme.colors.primary}
           />
-        </View>
+          <Appbar.Content 
+            title="Create Group" 
+            titleStyle={{ color: theme.colors.text }}
+          />
+        </Appbar.Header>
 
-        <HelperText type="info" visible={isPrivate}>
-          Private groups require approval to join
-        </HelperText>
+        <View style={styles.content}>
+          <TextInput
+            label="Group Name"
+            value={name}
+            onChangeText={setName}
+            style={styles.input}
+            error={!!error && !name.trim()}
+          />
 
-        {error ? (
-          <HelperText type="error" visible={!!error}>
-            {error}
+          <TextInput
+            label="Description"
+            value={description}
+            onChangeText={setDescription}
+            multiline
+            numberOfLines={3}
+            style={styles.input}
+          />
+
+          <View style={styles.switchContainer}>
+            <Text>Private Group</Text>
+            <Switch
+              value={isPrivate}
+              onValueChange={setIsPrivate}
+            />
+          </View>
+
+          <HelperText type="info" visible={isPrivate}>
+            Private groups require approval to join
           </HelperText>
-        ) : null}
 
-        <Button
-          mode="contained"
-          onPress={handleCreateGroup}
-          loading={loading}
-          disabled={loading || !name.trim()}
-          style={styles.button}
-        >
-          Create Group
-        </Button>
+          {error ? (
+            <HelperText type="error" visible={!!error}>
+              {error}
+            </HelperText>
+          ) : null}
+
+          <Button
+            mode="contained"
+            onPress={handleCreateGroup}
+            loading={loading}
+            disabled={loading || !name.trim()}
+            style={styles.button}
+          >
+            Create Group
+          </Button>
+        </View>
       </View>
-    </View>
+    </ScreenBackground>
   );
 };
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: theme.colors.background,
+    backgroundColor: 'transparent',
   },
   content: {
-    padding: 16,
+    padding: 100,
   },
   input: {
     marginBottom: 16,
@@ -153,6 +170,16 @@ const styles = StyleSheet.create({
   },
   button: {
     marginTop: 16,
+  },
+  header: {
+    backgroundColor: 'rgba(255,255,255,0.9)',
+    elevation: 2,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(0,0,0,0.1)',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 3,
   },
 });
 

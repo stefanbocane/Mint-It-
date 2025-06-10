@@ -17,7 +17,6 @@ export const RARITY_WEIGHTS = {
 };
 
 export const RARITY_COLORS = {
-  'mystery': '#9B5DE5', // Updated purple color for mystery rarity
   [RARITY_TYPES.COMMON]: '#808080',
   [RARITY_TYPES.UNCOMMON]: '#4FC3A1', // Updated green color
   [RARITY_TYPES.RARE]: '#3498DB',

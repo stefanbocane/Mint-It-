@@ -1,5 +1,5 @@
 import { StyleSheet, View } from 'react-native';
-import { useBalance } from '../contexts/BalanceContext';
+import { useBalance } from '../hooks/useBackwardCompatibility';
 import CoinCount from './CoinCount';
 
 const CoinHeader = () => {

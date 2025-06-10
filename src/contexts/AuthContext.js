@@ -1,10 +1,10 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut } from 'firebase/auth';
 import { doc, getDoc, setDoc } from 'firebase/firestore';
-import { createContext, useContext, useEffect, useState } from 'react';
+import React, { createContext, useContext, useEffect, useState } from 'react';
 import { auth, db } from '../config/firebase';
+import CacheService from '../services/caching/CacheService';
 import { registerForPushNotificationsAsync } from '../services/notifications';
-import { performCacheMaintenance, preloadUserData } from '../utils/appInitializer';
 
 const AuthContext = createContext();
 
@@ -22,31 +22,35 @@ export const AuthContextProvider = ({ children, initialUser = null }) => {
   const [user, setUser] = useState(initialUser);
   const [loading, setLoading] = useState(initialUser ? false : true);
 
-  // Perform cache maintenance on context initialization
-  useEffect(() => {
-    performCacheMaintenance()
-      .then(result => console.log('Initial cache maintenance completed:', result))
-      .catch(err => console.error('Error in initial cache maintenance:', err));
-  }, []);
+  // FIXED: Prevent infinite loops by stabilizing the initialUser reference
+  const stableInitialUser = React.useMemo(() => initialUser, [initialUser?.uid]);
+
+  // OPTIMIZATION: Cache maintenance moved to UnifiedBootstrapService
+  // No longer needed here as it's handled in the unified bootstrap process
 
   // Only set up the auth state listener if we don't have an initialUser
   useEffect(() => {
     // If we already have an initialUser, don't set up the auth listener
-    if (initialUser) {
+    if (stableInitialUser) {
       setLoading(false);
       return () => {};
     }
 
     const unsubscribe = auth.onAuthStateChanged(async (user) => {
       if (user) {
-        // Get user data from Firestore
-        const userDoc = await getDoc(doc(db, 'users', user.uid));
-        if (!userDoc.exists()) {
+        // STEP 3.F.1: Use enhanced cache-aside pattern for current user profile
+        const userData = await CacheService.getUserProfileCacheAside(
+          user.uid, 
+          () => getDoc(doc(db, 'users', user.uid))
+        );
+        
+        if (!userData) {
           // Create new user document if it doesn't exist
           await setDoc(doc(db, 'users', user.uid), {
             email: user.email,
             username: user.email.split('@')[0],
             coinBalance: 1000, // Initial balance
+            gems: 5, // Initial gems
             groupBalances: {}, // Initialize empty group balances object
             createdAt: new Date(),
             lastOperation: 'create',
@@ -54,12 +58,14 @@ export const AuthContextProvider = ({ children, initialUser = null }) => {
           });
         }
         
-        // Register for push notifications
-        try {
-          await registerForPushNotificationsAsync(user.uid);
-        } catch (error) {
-          console.error('Error registering for push notifications:', error);
-        }
+        // Register for push notifications (moved to background)
+        setTimeout(async () => {
+          try {
+            await registerForPushNotificationsAsync(user.uid);
+          } catch (error) {
+            console.error('Error registering for push notifications:', error);
+          }
+        }, 1000); // 1 second delay to not block auth
         
         setUser(user);
       } else {
@@ -69,7 +75,7 @@ export const AuthContextProvider = ({ children, initialUser = null }) => {
     });
 
     return unsubscribe;
-  }, [initialUser]);
+  }, [stableInitialUser]); // FIXED: Use stable reference to prevent loops
 
   const saveCredentials = async (email, password) => {
     try {
@@ -116,9 +122,8 @@ export const AuthContextProvider = ({ children, initialUser = null }) => {
         await removeSavedCredentials();
       }
       
-      // Preload essential user data to improve initial experience
-      preloadUserData(userCredential.user.uid, groupId)
-        .catch(err => console.error('Error preloading user data:', err));
+      // OPTIMIZATION: Preloading moved to UnifiedBootstrapService in App.js
+      // No longer needed here as it's handled in the unified bootstrap process
       
       return userCredential.user;
     } catch (error) {
@@ -128,10 +133,12 @@ export const AuthContextProvider = ({ children, initialUser = null }) => {
 
   const logout = async () => {
     try {
-      // Perform maintenance before logout to clean up stale data
-      await performCacheMaintenance();
       await signOut(auth);
       await removeSavedCredentials();
+      // OPTIMIZATION: Cache maintenance moved to background
+      setTimeout(() => {
+        UnifiedBootstrapService.performCacheMaintenance().catch(console.error);
+      }, 100);
     } catch (error) {
       throw error;
     }
@@ -148,14 +155,15 @@ export const AuthContextProvider = ({ children, initialUser = null }) => {
     }
   };
 
-  const value = {
+  // FIXED: Memoize context value to prevent infinite re-renders
+  const value = React.useMemo(() => ({
     user,
     loading,
     signUp,
     signIn,
     logout,
     autoLogin,
-  };
+  }), [user, loading]); // Only depend on user and loading state
 
   return (
     <AuthContext.Provider value={value}>

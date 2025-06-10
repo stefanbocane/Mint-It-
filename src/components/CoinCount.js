@@ -1,15 +1,13 @@
 import Icon from '@expo/vector-icons/MaterialCommunityIcons';
-import * as Haptics from 'expo-haptics';
-import { useCallback, useEffect, useState } from 'react';
-import { StyleSheet, TouchableOpacity, View } from 'react-native';
+import { useEffect, useState } from 'react';
+import { StyleSheet, View } from 'react-native';
 import { ActivityIndicator, Text, useTheme } from 'react-native-paper';
-import { useBalance } from '../contexts/BalanceContext';
+import { useBalance } from '../hooks/useBackwardCompatibility';
 
 const CoinCount = ({ size = 'normal', showLabel = false, forceValue = null }) => {
   const theme = useTheme();
-  const { balance, isLoading, refreshBalance } = useBalance();
+  const { balance, isLoading } = useBalance();
   const [displayBalance, setDisplayBalance] = useState(0);
-  const [isRefreshing, setIsRefreshing] = useState(false);
   
   const iconSize = size === 'small' ? 16 : size === 'large' ? 32 : 24;
   const textSize = size === 'small' ? 14 : size === 'large' ? 20 : 16;
@@ -29,20 +27,6 @@ const CoinCount = ({ size = 'normal', showLabel = false, forceValue = null }) =>
     }
   }, [balance, forceValue]);
   
-  const handleRefresh = useCallback(async () => {
-    console.log('Manual refresh triggered in CoinCount');
-    setIsRefreshing(true);
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    
-    // Use the safe refresh that doesn't trigger awards
-    await refreshBalance();
-    
-    // Add a small delay to show the refreshing state
-    setTimeout(() => {
-      setIsRefreshing(false);
-    }, 800);
-  }, [refreshBalance]);
-  
   if (isLoading) {
     return (
       <View style={[styles.container, { paddingHorizontal, paddingVertical }]}>
@@ -52,7 +36,7 @@ const CoinCount = ({ size = 'normal', showLabel = false, forceValue = null }) =>
   }
   
   return (
-    <TouchableOpacity
+    <View
       style={[
         styles.container, 
         { 
@@ -63,14 +47,8 @@ const CoinCount = ({ size = 'normal', showLabel = false, forceValue = null }) =>
           paddingVertical
         }
       ]}
-      onPress={handleRefresh}
-      activeOpacity={0.7}
     >
-      {isRefreshing ? (
-        <ActivityIndicator size={iconSize} color={theme.colors.primary} style={styles.icon} />
-      ) : (
-        <Icon name="leaf" size={iconSize} color={theme.colors.primary} style={styles.icon} />
-      )}
+      <Icon name="leaf" size={iconSize} color={theme.colors.primary} style={styles.icon} />
       <Text style={[
         styles.balance, 
         { 
@@ -80,7 +58,7 @@ const CoinCount = ({ size = 'normal', showLabel = false, forceValue = null }) =>
       ]}>
         {showLabel ? `Coins: ${displayBalance}` : displayBalance}
       </Text>
-    </TouchableOpacity>
+    </View>
   );
 };
 
@@ -88,15 +66,17 @@ const styles = StyleSheet.create({
   container: {
     flexDirection: 'row',
     alignItems: 'center',
-    borderRadius: 20,
+    borderRadius: 16,
     borderWidth: 1,
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-    elevation: 2,
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 2,
+    elevation: 1,
+    minWidth: 50, // Ensure minimum width for small balances
   },
   icon: {
     marginRight: 2,
+    marginLeft: 4, // Add some left margin for better spacing
   },
   balance: {
     marginLeft: 4,

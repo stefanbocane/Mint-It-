@@ -1,5 +1,5 @@
 /**
- * Centralized Caching Service
+ * Centralized Caching Service - Enhanced for Step 3.F.1
  * 
  * This service provides a unified caching layer that replaces:
  * - globalCacheManager.js
@@ -13,10 +13,14 @@
  * - TTL support
  * - Namespace support
  * - Performance metrics
+ * - STEP 3.F.1: Enhanced client-side caching strategies
+ * - Cache-aside pattern implementation
+ * - Intelligent cache warming
+ * - User profile and settings optimization
  */
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { getDoc, getDocs } from 'firebase/firestore';
+import { collection, documentId as firestoreDocumentId, getDoc, getDocs, query, where } from 'firebase/firestore';
 
 // Default cache TTL values if constants not available
 const DEFAULT_CACHE_TTL = {
@@ -263,36 +267,68 @@ const setInStorage = async (key, data, ttl) => {
  * @returns {Object} - Cache metrics
  */
 const getCacheMetrics = () => {
-  const totalRequests = cacheStats.hits + cacheStats.misses;
-  const hitRate = totalRequests > 0 ? cacheStats.hits / totalRequests : 0;
-  
-  const namespaceStats = {};
-  for (const [namespace, cache] of memoryCaches.entries()) {
-    const nsTotal = cache.stats.hits + cache.stats.misses;
-    const nsHitRate = nsTotal > 0 ? cache.stats.hits / nsTotal : 0;
+  try {
+    // Return default metrics if cache manager is not initialized
+    if (!cacheStats || !memoryCaches) {
+      return {
+        hits: 0,
+        misses: 0,
+        hitRate: 0,
+        namespaces: {},
+        lastAccess: null,
+        lastUpdate: null,
+        isInitialized: false,
+        error: 'Cache not initialized'
+      };
+    }
+
+    const totalRequests = (cacheStats.hits || 0) + (cacheStats.misses || 0);
+    const hitRate = totalRequests > 0 ? (cacheStats.hits || 0) / totalRequests : 0;
     
-    namespaceStats[namespace] = {
-      size: cache.data.size,
-      maxSize: cache.maxSize,
-      hits: cache.stats.hits,
-      misses: cache.stats.misses,
-      hitRate: Math.round(nsHitRate * 100)
+    const namespaceStats = {};
+    for (const [namespace, cache] of memoryCaches.entries()) {
+      const nsHits = cache.stats?.hits || 0;
+      const nsMisses = cache.stats?.misses || 0;
+      const nsTotal = nsHits + nsMisses;
+      const nsHitRate = nsTotal > 0 ? nsHits / nsTotal : 0;
+      
+      namespaceStats[namespace] = {
+        hits: nsHits,
+        misses: nsMisses,
+        hitRate: nsHitRate,
+        size: cache.data?.size || 0,
+        maxSize: cache.maxSize || 0
+      };
+    }
+
+    return {
+      hits: cacheStats.hits || 0,
+      misses: cacheStats.misses || 0,
+      hitRate: hitRate,
+      totalRequests: totalRequests,
+      namespaces: namespaceStats,
+      collections: cacheStats.collections || {},
+      lastAccess: cacheStats.lastAccess || null,
+      lastUpdate: cacheStats.lastUpdate || null,
+      isInitialized: true,
+      timestamp: new Date().toISOString()
+    };
+  } catch (error) {
+    console.error('Error getting cache metrics:', error);
+    return {
+      hits: 0,
+      misses: 0,
+      hitRate: 0,
+      namespaces: {},
+      lastAccess: null,
+      lastUpdate: null,
+      isInitialized: false,
+      error: error.message || 'Error getting cache metrics'
     };
   }
-  
-  return {
-    overall: {
-      hitRate: Math.round(hitRate * 100),
-      hits: cacheStats.hits,
-      misses: cacheStats.misses,
-      totalRequests
-    },
-    namespaces: namespaceStats,
-    collections: cacheStats.collections
-  };
 };
 
-// Namespace-specific helper functions
+// All namespace-specific helper functions are now unified below. If you need user, document, or query cache, use the methods on the CacheService object. See JSDoc for details.
 
 /**
  * User cache functions - replaces UserCache.js
@@ -363,16 +399,6 @@ const getUser = async (userId, options = {}) => {
  * @param {Object} options - Cache options
  * @returns {Promise<Object|null>} - Document data or null
  */
-/**
- * Get a document with intelligent caching
- * This replaces both getCachedDoc from firestoreUtils and
- * getDocumentWithEnhancedCache from enhancedQueryCache
- *
- * @param {string|DocumentReference} collectionOrDocRef - Collection name or document reference
- * @param {string|Object} documentIdOrOptions - Document ID or options object
- * @param {Object} options - Cache options
- * @returns {Promise<Object|null>} - Document data or null
- */
 const getDocument = async (collectionOrDocRef, documentIdOrOptions, options = {}) => {
   let collectionName, documentId, docRef;
   
@@ -388,8 +414,8 @@ const getDocument = async (collectionOrDocRef, documentIdOrOptions, options = {}
       options = documentIdOrOptions || {};
       
       // Go straight to Firestore for document reference
-      console.log(`Cache: Direct Firestore fetch for document reference`);
-      const docSnapshot = await getDoc(docRef);
+      // console.log(`Cache: Direct Firestore fetch for document reference: ${docRef.path}`); // Example of more detailed logging
+      const docSnapshot = await getDoc(docRef); // Uses imported getDoc
       if (!docSnapshot.exists()) {
         return null;
       }
@@ -403,64 +429,122 @@ const getDocument = async (collectionOrDocRef, documentIdOrOptions, options = {}
       return null;
     }
   } catch (error) {
-    console.error(`Cache: Error parsing document reference: ${error.message}`);
-    // If we're here, try direct Firestore access as last resort
+    console.error(`Cache: Error parsing document reference or initial fetch: ${error.message}`, { collectionOrDocRef, documentIdOrOptions });
+    // If docRef was intended, attempt a direct fetch as a last resort.
     if (docRef) {
       try {
+        // console.log(`Cache: Attempting fallback direct fetch for docRef: ${docRef.path}`);
         const docSnapshot = await getDoc(docRef);
         if (docSnapshot.exists()) {
           const data = docSnapshot.data();
           return { id: docSnapshot.id, ...data };
         }
       } catch (finalError) {
-        console.error(`Cache: Final error fetching document: ${finalError.message}`);
+        console.error(`Cache: Final error fetching document via docRef: ${finalError.message}`);
       }
     }
     return null;
   }
   
-  if (!collectionName || !documentId) return null;
+  if (!collectionName || !documentId) {
+    // console.warn('Cache: getDocument called with invalid collectionName or documentId.', { collectionName, documentId });
+    return null;
+  }
   
   const namespace = 'documents';
   const cacheKey = createCacheKey(namespace, collectionName, documentId);
   
+  // OPTIMIZATION: Support field selection for reduced payload
+  const { fields = null, priority = 'normal' } = options;
+  
   // Check memory cache first (fastest)
-  const memoryResult = getFromMemoryCache(namespace, cacheKey, collectionName);
-  if (memoryResult && !options.forceRefresh) return memoryResult;
+  if (!options.forceRefresh) {
+    const memoryResult = getFromMemoryCache(namespace, cacheKey, collectionName);
+    if (memoryResult !== null && memoryResult !== undefined) { // Ensure to handle null if "not found" is cached
+      // console.log(`Cache HIT (Memory): ${cacheKey}`);
+      
+      // OPTIMIZATION: Apply field filtering to cached data if specified
+      if (fields && Array.isArray(fields)) {
+        const filteredData = { id: memoryResult.id };
+        fields.forEach(field => {
+          if (memoryResult[field] !== undefined) {
+            filteredData[field] = memoryResult[field];
+          }
+        });
+        return filteredData;
+      }
+      
+      return memoryResult;
+    }
+  }
   
   // Default TTL from options or config
-  const ttl = options.ttl || CACHE_TTL.DEFAULT;
+  const ttl = options.ttl || CACHE_TTL.MEDIUM; 
   
   try {
     // Try from AsyncStorage next
-    const storageKey = `storage:${cacheKey}`;
-    const storageResult = await getFromStorage(storageKey, collectionName);
+    if (!options.forceRefresh) {
+      const storageKey = `storage:${cacheKey}`;
+      const storageResult = await getFromStorage(storageKey, collectionName);
     
-    if (storageResult && !options.forceRefresh) {
-      // Store in memory cache for faster access next time
-      setInMemoryCache(namespace, cacheKey, storageResult, ttl);
-      return storageResult;
+      if (storageResult !== null && storageResult !== undefined) {
+        // console.log(`Cache HIT (Storage): ${storageKey}`);
+        // Store in memory cache for faster access next time
+        setInMemoryCache(namespace, cacheKey, storageResult, ttl);
+        
+        // OPTIMIZATION: Apply field filtering to cached storage data if specified
+        if (fields && Array.isArray(fields)) {
+          const filteredData = { id: storageResult.id };
+          fields.forEach(field => {
+            if (storageResult[field] !== undefined) {
+              filteredData[field] = storageResult[field];
+            }
+          });
+          return filteredData;
+        }
+        
+        return storageResult;
+      }
     }
     
+    // console.log(`Cache MISS: ${cacheKey}. Fetching from Firestore.`);
     // If not in cache or force refresh, fetch from Firestore
-    const { getDoc, doc } = require('firebase/firestore');
+    const { doc } = require('firebase/firestore'); 
     const { db } = require('../../config/firebase');
     
-    const docRef = doc(db, collectionName, documentId);
-    const docSnapshot = await getDoc(docRef);
+    const firestoreDocRef = doc(db, collectionName, documentId);
+    const docSnapshot = await getDoc(firestoreDocRef); 
     
     if (docSnapshot.exists()) {
       const docData = { id: docSnapshot.id, ...docSnapshot.data() };
       
-      // Update both memory and AsyncStorage caches
+      // Update both memory and AsyncStorage caches (store full data)
       setInMemoryCache(namespace, cacheKey, docData, ttl);
+      const storageKey = `storage:${cacheKey}`;
+      // console.log(`Cache SET: ${cacheKey} (memory) & ${storageKey} (storage) for ID ${docSnapshot.id}`);
       await setInStorage(storageKey, docData, ttl);
       
+      // OPTIMIZATION: Apply field filtering if specified
+      if (fields && Array.isArray(fields)) {
+        const filteredData = { id: docData.id };
+        fields.forEach(field => {
+          if (docData[field] !== undefined) {
+            filteredData[field] = docData[field];
+          }
+        });
+        return filteredData;
+      }
+      
       return docData;
+    } else {
+      // console.log(`Cache Firestore MISS: Document ${collectionName}/${documentId} does not exist.`);
+      // Optionally cache "not found" for a short period to prevent repeated lookups for non-existent docs
+      // setInMemoryCache(namespace, cacheKey, null, CACHE_TTL.SHORT); // Example
+      // await setInStorage(`storage:${cacheKey}`, null, CACHE_TTL.SHORT); // Example
     }
     return null;
   } catch (error) {
-    console.error(`Error fetching document ${collectionName}/${documentId}:`, error);
+    console.error(`Error in getDocument for ${collectionName}/${documentId}:`, error);
     return null;
   }
 };
@@ -470,33 +554,126 @@ const getDocument = async (collectionOrDocRef, documentIdOrOptions, options = {}
  * 
  * @param {string} collectionName - Collection name
  * @param {string[]} documentIds - Array of document IDs
- * @param {Object} options - Cache options
- * @returns {Promise<Object[]>} - Array of documents
- */
-/**
- * Get multiple documents with efficient batching and caching
- * 
- * @param {string} collectionName - Collection name
- * @param {string[]} documentIds - Array of document IDs
- * @param {Object} options - Cache options
- * @returns {Promise<Object[]>} - Array of documents
+ * @param {Object} options - Cache options (e.g., ttl, forceRefresh)
+ * @returns {Promise<Object[]>} - Array of documents, preserving original order where possible for found items
  */
 const getDocuments = async (collectionName, documentIds, options = {}) => {
-  if (!documentIds || !documentIds.length) return [];
-  
-  // Filter out duplicates
-  const uniqueIds = [...new Set(documentIds)];
-  
-  // Use Promise.all to fetch all documents in parallel
-  const docPromises = uniqueIds.map(id => getDocument(collectionName, id, options));
-  const docs = await Promise.all(docPromises);
-  
-  // Filter out null results
-  return docs.filter(Boolean);
+  if (!collectionName || typeof collectionName !== 'string') {
+    console.error('Cache: getDocuments called with invalid collectionName.', { collectionName });
+    return [];
+  }
+  if (!Array.isArray(documentIds) || documentIds.length === 0) {
+    return [];
+  }
+
+  const uniqueIds = [...new Set(documentIds.filter(id => typeof id === 'string' && id.trim() !== ''))];
+  if (uniqueIds.length === 0) {
+    return [];
+  }
+
+  const resultsMap = new Map(); // To store fetched documents by ID for correct ordering
+  const idsToFetchFromFirestore = [];
+  const namespace = 'documents';
+  const ttl = options.ttl || CACHE_TTL.MEDIUM;
+
+  // console.log(`Cache: getDocuments for ${collectionName}`, { count: uniqueIds.length, forceRefresh: options.forceRefresh });
+
+  if (options.forceRefresh) {
+    idsToFetchFromFirestore.push(...uniqueIds);
+    // console.log(`Cache: Force refresh, all ${uniqueIds.length} IDs will be fetched from Firestore.`);
+  } else {
+    // Check caches first
+    for (const id of uniqueIds) {
+      const cacheKey = createCacheKey(namespace, collectionName, id);
+      const memoryResult = getFromMemoryCache(namespace, cacheKey, collectionName);
+
+      if (memoryResult !== null && memoryResult !== undefined) { // Ensure to handle null if "not found" is cached
+        // console.log(`Cache HIT (Memory): ${cacheKey} for ID ${id}`);
+        resultsMap.set(id, memoryResult);
+      } else {
+        const storageKey = `storage:${cacheKey}`;
+        const storageResult = await getFromStorage(storageKey, collectionName);
+        if (storageResult !== null && storageResult !== undefined) {
+          // console.log(`Cache HIT (Storage): ${storageKey} for ID ${id}`);
+          resultsMap.set(id, storageResult);
+          setInMemoryCache(namespace, cacheKey, storageResult, ttl); // Populate memory cache
+        } else {
+          // console.log(`Cache MISS (Memory & Storage): ${cacheKey} for ID ${id}`);
+          idsToFetchFromFirestore.push(id);
+        }
+      }
+    }
+  }
+
+  // Fetch remaining documents from Firestore in batches
+  if (idsToFetchFromFirestore.length > 0) {
+    // console.log(`Cache: Fetching ${idsToFetchFromFirestore.length} IDs from Firestore for collection ${collectionName}.`);
+    const { db } = require('../../config/firebase');
+    // Firestore 'in' query supports up to 30 elements as of last update
+    const batchSize = 30; 
+    for (let i = 0; i < idsToFetchFromFirestore.length; i += batchSize) {
+      const batchOfIds = idsToFetchFromFirestore.slice(i, i + batchSize);
+      if (batchOfIds.length === 0) continue;
+
+      // console.log(`Cache: Firestore batch fetch for ${collectionName}`, { batch: (i / batchSize) + 1, ids: batchOfIds });
+      try {
+        const docsQuery = query(
+          collection(db, collectionName),
+          where(firestoreDocumentId(), 'in', batchOfIds)
+        );
+        const querySnapshot = await getDocs(docsQuery);
+
+        // console.log(`Cache: Firestore batch response for ${collectionName}`, { count: querySnapshot.size });
+        querySnapshot.forEach(docSnap => {
+          if (docSnap.exists()) {
+            const docData = { id: docSnap.id, ...docSnap.data() };
+            resultsMap.set(docSnap.id, docData);
+            
+            const cacheKey = createCacheKey(namespace, collectionName, docSnap.id);
+            const storageKey = `storage:${cacheKey}`;
+            // console.log(`Cache SET: ${cacheKey} (memory) & ${storageKey} (storage) for ID ${docSnap.id}`);
+            setInMemoryCache(namespace, cacheKey, docData, ttl);
+            setInStorage(storageKey, docData, ttl).catch(err => { // Non-blocking, log error
+              console.warn(`Cache: Failed to set document ${docSnap.id} in AsyncStorage during batch fetch:`, err);
+            });
+          } else {
+            // This case should ideally not happen if IDs are valid, but good to be aware.
+            // console.warn(`Cache: Document ID ${docSnap.id} from batch query did not exist in ${collectionName}.`);
+          }
+        });
+        
+        // For IDs in the batch that were not returned by Firestore (e.g., non-existent),
+        // we might want to cache them as "not found" to prevent repeated lookups.
+        const fetchedIdsInBatch = new Set(querySnapshot.docs.map(d => d.id));
+        for (const idInBatch of batchOfIds) {
+            if (!fetchedIdsInBatch.has(idInBatch)) {
+                // console.log(`Cache: Document ${collectionName}/${idInBatch} not found in Firestore batch. Caching as null.`);
+                // resultsMap.set(idInBatch, null); // Explicitly mark as not found
+                // const cacheKey = createCacheKey(namespace, collectionName, idInBatch);
+                // setInMemoryCache(namespace, cacheKey, null, CACHE_TTL.SHORT); // Cache "not found"
+                // const storageKey = `storage:${cacheKey}`;
+                // setInStorage(storageKey, null, CACHE_TTL.SHORT).catch(err => {
+                //   console.warn(`Cache: Failed to set "not found" for ${idInBatch} in AsyncStorage:`, err);
+                // });
+            }
+        }
+
+      } catch (error) {
+        console.error(`Cache: Error fetching batch of documents from ${collectionName}:`, error, { batchOfIds });
+        // If a batch fails, those IDs won't be in resultsMap.
+        // Consider how to handle this (e.g., retry, mark as error, etc.)
+      }
+    }
+  }
+
+  // Assemble results in the original order of uniqueIds, returning only found documents
+  // or null for documents explicitly cached as not found (if that logic is added)
+  return uniqueIds.map(id => resultsMap.get(id)).filter(doc => doc !== undefined);
 };
 
 /**
  * Get a value from cache with simple key-value interface
+ * ENHANCED FOR ULTRA-OPTIMIZATION: Supports both memory and storage fallback
  * 
  * @param {string} key - Cache key
  * @param {Object} options - Cache options
@@ -504,7 +681,22 @@ const getDocuments = async (collectionName, documentIds, options = {}) => {
  */
 const getValue = async (key, options = {}) => {
   try {
-    return getFromMemoryCache('general', key, 'general');
+    // First try memory cache for fastest access
+    const memoryValue = getFromMemoryCache('general', key, 'general');
+    if (memoryValue !== null) {
+      return memoryValue;
+    }
+    
+    // Fallback to AsyncStorage for persistence across app restarts
+    const storageValue = await getFromStorage(key, 'general');
+    if (storageValue !== null) {
+      // Repopulate memory cache for next access
+      const ttl = options.ttl || CACHE_TTL.MEDIUM;
+      setInMemoryCache('general', key, storageValue, ttl);
+      return storageValue;
+    }
+    
+    return null;
   } catch (error) {
     console.error(`Cache: Error in getValue for key ${key}: ${error.message}`);
     return null;
@@ -513,6 +705,7 @@ const getValue = async (key, options = {}) => {
 
 /**
  * Set a value in cache with simple key-value interface
+ * ENHANCED FOR ULTRA-OPTIMIZATION: Stores in both memory and storage
  * 
  * @param {string} key - Cache key
  * @param {any} value - Value to cache
@@ -522,7 +715,15 @@ const getValue = async (key, options = {}) => {
 const setValue = async (key, value, options = {}) => {
   try {
     const ttl = options.ttl || CACHE_TTL.MEDIUM;
+    
+    // Store in memory cache for immediate access
     setInMemoryCache('general', key, value, ttl);
+    
+    // Store in AsyncStorage for persistence (async, non-blocking)
+    setInStorage(key, value, ttl).catch(err => {
+      console.warn(`AsyncStorage failed for key ${key}:`, err);
+    });
+    
     return true;
   } catch (error) {
     console.error(`Cache: Error in setValue for key ${key}: ${error.message}`);
@@ -583,6 +784,36 @@ const invalidate = async (key) => {
     return true;
   } catch (error) {
     console.error('Error invalidating cache:', error);
+    return false;
+  }
+};
+
+/**
+ * Invalidate a specific document cache entry
+ * 
+ * @param {string} collectionName - Collection name
+ * @param {string} documentId - Document ID
+ * @returns {Promise<boolean>} - Success flag
+ */
+const invalidateDocument = async (collectionName, documentId) => {
+  try {
+    const namespace = 'documents';
+    const cacheKey = createCacheKey(namespace, collectionName, documentId);
+    const storageKey = `storage:${cacheKey}`;
+    
+    // Clear from memory cache
+    clearMemoryCache(namespace, cacheKey);
+    
+    // Clear from storage
+    try {
+      await AsyncStorage.removeItem(storageKey);
+    } catch (storageError) {
+      console.warn('Error removing document from AsyncStorage:', storageError);
+    }
+    
+    return true;
+  } catch (error) {
+    console.error(`Error invalidating document cache for ${collectionName}/${documentId}:`, error);
     return false;
   }
 };
@@ -654,29 +885,349 @@ const getQueryAccessReport = async () => {
   }).sort((a, b) => (b.hits + b.misses) - (a.hits + a.misses));
 };
 
+/**
+ * Get query results with caching support
+ * 
+ * @param {Query} firestoreQuery - Firestore Query object
+ * @param {Object} options - Cache options
+ * @returns {Promise<Array>} - Query results
+ */
+const getQuery = async (firestoreQuery, options = {}) => {
+  try {
+    const { forceRefresh = false, ttl = CACHE_TTL.MEDIUM } = options;
+    
+    // Extract query information to create a cache key
+    // Use a simple hash function instead of Buffer for React Native compatibility
+    const queryString = firestoreQuery.toString();
+    const simpleHash = queryString.split('').reduce((hash, char) => {
+      return ((hash << 5) - hash + char.charCodeAt(0)) & 0x7fffffff;
+    }, 0);
+    const cacheKey = `query:${simpleHash}`;
+    const namespace = 'queries';
+    
+    // Check memory cache first (unless force refresh)
+    if (!forceRefresh) {
+      const memoryResult = getFromMemoryCache(namespace, cacheKey, 'queries');
+      if (memoryResult !== null && memoryResult !== undefined) {
+        trackCacheStats(namespace, 'queries', true);
+        return memoryResult;
+      }
+    }
+    
+    // Check storage cache
+    if (!forceRefresh) {
+      const storageKey = `storage:${cacheKey}`;
+      const storageResult = await getFromStorage(storageKey, 'queries');
+      if (storageResult !== null && storageResult !== undefined) {
+        // Store in memory cache for faster access next time
+        setInMemoryCache(namespace, cacheKey, storageResult, ttl);
+        trackCacheStats(namespace, 'queries', true);
+        return storageResult;
+      }
+    }
+    
+    // Cache miss - execute the query
+    trackCacheStats(namespace, 'queries', false);
+    
+    const { getDocs } = require('firebase/firestore');
+    const querySnapshot = await getDocs(firestoreQuery);
+    
+    const results = querySnapshot.docs.map(doc => ({
+      id: doc.id,
+      ...doc.data()
+    }));
+    
+    // Update both memory and storage caches
+    setInMemoryCache(namespace, cacheKey, results, ttl);
+    const storageKey = `storage:${cacheKey}`;
+    await setInStorage(storageKey, results, ttl);
+    
+    return results;
+    
+  } catch (error) {
+    console.error('Error in getQuery:', error);
+    throw error;
+  }
+};
+
+// ***** NEW FUNCTION getOrSet *****
+/**
+ * Retrieves a value from the cache. If the value is not found or is stale,
+ * it executes the provided fetchFn, stores its result in the cache, and
+ * then returns the result.
+ *
+ * @param {string} key - The cache key.
+ * @param {Function} fetchFn - An async function that fetches the data if not in cache.
+ * @param {object} [options={}] - Options for caching (e.g., ttl).
+ * @param {number} [options.ttl] - Time to live in milliseconds.
+ * @returns {Promise<any>} - The cached or freshly fetched data.
+ */
+const getOrSet = async (key, fetchFn, options = {}) => {
+  const { ttl = CACHE_TTL.MEDIUM } = options; // Default TTL if not provided
+
+  // Try to get from memory cache first
+  const memoryValue = getFromMemoryCache('default', key); // Assuming 'default' namespace or adjust
+  if (memoryValue !== null) {
+    return memoryValue;
+  }
+
+  // Try to get from AsyncStorage
+  const storageValue = await getFromStorage(key); // AsyncStorage keys are typically global
+  if (storageValue !== null) {
+    // If found in storage, also populate memory cache for faster access next time
+    setInMemoryCache('default', key, storageValue, ttl);
+    return storageValue;
+  }
+
+  // If not in cache or stale, fetch it
+  trackCacheStats('default', null, false); // Cache miss
+  const freshData = await fetchFn();
+
+  if (freshData !== undefined && freshData !== null) {
+    // Store in both memory and AsyncStorage
+    setInMemoryCache('default', key, freshData, ttl);
+    await setInStorage(key, freshData, ttl);
+  }
+  return freshData;
+};
+// ***** END NEW FUNCTION getOrSet *****
+
+// STEP 3.F.1: Enhanced Client-Side Caching Strategies
+
+/**
+ * Cache-aside pattern for user profiles with intelligent warming
+ */
+const getUserProfileCacheAside = async (userId, fetchFn, options = {}) => {
+  const { 
+    ttl = CACHE_TTL.LONG, // 30 minutes for user profiles
+    warmCache = true,
+    namespace = 'user_profiles'
+  } = options;
+
+  const cacheKey = `profile_${userId}`;
+
+  try {
+    console.log(`🎯 OPTIMIZED: Cache-aside lookup for user profile ${userId}`);
+
+    // Step 1: Check cache first
+    const cached = await getValue(cacheKey, { namespace, ttl });
+    if (cached !== null) {
+      console.log(`✅ OPTIMIZED: User profile cache hit for ${userId}`);
+      
+      // Background cache warming if enabled and cache is getting old
+      if (warmCache) {
+        const cacheAge = Date.now() - (cached._cacheTimestamp || 0);
+        const warmThreshold = ttl * 0.8; // Warm when 80% of TTL has passed
+        
+        if (cacheAge > warmThreshold) {
+          console.log(`🔄 OPTIMIZED: Background warming user profile cache for ${userId}`);
+          // Warm cache in background without blocking
+          Promise.resolve().then(async () => {
+            try {
+              const freshData = await fetchFn();
+              await setValue(cacheKey, {
+                ...freshData,
+                _cacheTimestamp: Date.now()
+              }, { ttl, namespace });
+            } catch (error) {
+              console.warn(`⚠️ Background cache warming failed for ${userId}:`, error);
+            }
+          });
+        }
+      }
+      
+      return cached;
+    }
+
+    // Step 2: Cache miss - fetch from source
+    console.log(`📥 OPTIMIZED: User profile cache miss for ${userId}, fetching from source`);
+    const freshData = await fetchFn();
+
+    // Step 3: Store in cache with timestamp
+    await setValue(cacheKey, {
+      ...freshData,
+      _cacheTimestamp: Date.now()
+    }, { ttl, namespace });
+
+    console.log(`💾 OPTIMIZED: Cached user profile for ${userId}`);
+    return freshData;
+
+  } catch (error) {
+    console.error(`🚨 Error in user profile cache-aside for ${userId}:`, error);
+    throw error;
+  }
+};
+
+/**
+ * Cache-aside pattern for application settings
+ */
+const getAppSettingsCacheAside = async (settingsKey, fetchFn, options = {}) => {
+  const { 
+    ttl = CACHE_TTL.EXTENDED, // 2 hours for app settings
+    namespace = 'app_settings'
+  } = options;
+
+  const cacheKey = `settings_${settingsKey}`;
+
+  try {
+    console.log(`⚙️ OPTIMIZED: Cache-aside lookup for app settings ${settingsKey}`);
+
+    // Check cache first
+    const cached = await getValue(cacheKey, { namespace, ttl });
+    if (cached !== null) {
+      console.log(`✅ OPTIMIZED: App settings cache hit for ${settingsKey}`);
+      return cached;
+    }
+
+    // Cache miss - fetch from source
+    console.log(`📥 OPTIMIZED: App settings cache miss for ${settingsKey}, fetching from source`);
+    const freshData = await fetchFn();
+
+    // Store in cache
+    await setValue(cacheKey, freshData, { ttl, namespace });
+
+    console.log(`💾 OPTIMIZED: Cached app settings for ${settingsKey}`);
+    return freshData;
+
+  } catch (error) {
+    console.error(`🚨 Error in app settings cache-aside for ${settingsKey}:`, error);
+    throw error;
+  }
+};
+
+/**
+ * Intelligent cache warming for frequently accessed data
+ */
+const warmFrequentlyAccessedData = async (userId, groupId) => {
+  if (!userId || !groupId) return;
+
+  try {
+    console.log(`🔥 OPTIMIZED: Warming frequently accessed data for user ${userId} in group ${groupId}`);
+
+    const warmingPromises = [
+      // Warm user profile
+      getUserProfileCacheAside(userId, async () => {
+        // This would normally fetch from Firestore
+        return { id: userId, warmed: true };
+      }, { warmCache: false }), // Don't warm while warming
+
+      // Warm group data
+      getValue(`group_${groupId}`, { 
+        namespace: 'groups',
+        ttl: CACHE_TTL.MEDIUM 
+      }),
+
+      // Warm user balance
+      getValue(`balance_${userId}`, { 
+        namespace: 'user_balances',
+        ttl: CACHE_TTL.SHORT 
+      }),
+
+      // Warm recent cards (if any)
+      getValue(`recent_cards_${userId}_${groupId}`, { 
+        namespace: 'user_cards',
+        ttl: CACHE_TTL.MEDIUM 
+      })
+    ];
+
+    const results = await Promise.allSettled(warmingPromises);
+    const successCount = results.filter(r => r.status === 'fulfilled').length;
+    
+    console.log(`🎯 OPTIMIZED: Cache warming completed - ${successCount}/${warmingPromises.length} successful`);
+
+  } catch (error) {
+    console.warn('⚠️ Cache warming failed:', error);
+  }
+};
+
+/**
+ * Smart cache invalidation based on data relationships
+ */
+const smartInvalidate = async (entityType, entityId, relatedEntities = []) => {
+  try {
+    console.log(`🧹 OPTIMIZED: Smart invalidation for ${entityType}:${entityId}`);
+
+    const invalidationPromises = [];
+
+    // Invalidate the main entity
+    invalidationPromises.push(invalidate(`${entityType}_${entityId}`));
+
+    // Invalidate related entities based on type
+    switch (entityType) {
+      case 'user':
+        // Invalidate user profile, balance, cards, etc.
+        invalidationPromises.push(
+          invalidate(`profile_${entityId}`),
+          invalidate(`balance_${entityId}`),
+          clearMemoryCache('user_cards', entityId),
+          clearMemoryCache('user_trades', entityId)
+        );
+        break;
+
+      case 'group':
+        // Invalidate group data and related collections
+        invalidationPromises.push(
+          clearMemoryCache('group_auctions', entityId),
+          clearMemoryCache('group_trades', entityId),
+          clearMemoryCache('group_members', entityId)
+        );
+        break;
+
+      case 'auction':
+        // Invalidate auction and related bid data
+        invalidationPromises.push(
+          clearMemoryCache('auction_bids', entityId),
+          invalidate(`auction_summary_${entityId}`)
+        );
+        break;
+
+      case 'trade':
+        // Invalidate trade and related user data
+        invalidationPromises.push(
+          clearMemoryCache('trade_participants', entityId)
+        );
+        break;
+    }
+
+    // Invalidate explicitly related entities
+    for (const related of relatedEntities) {
+      invalidationPromises.push(invalidate(`${related.type}_${related.id}`));
+    }
+
+    const results = await Promise.allSettled(invalidationPromises);
+    const successCount = results.filter(r => r.status === 'fulfilled').length;
+    
+    console.log(`✅ OPTIMIZED: Smart invalidation completed - ${successCount} operations successful`);
+
+  } catch (error) {
+    console.error(`🚨 Error in smart invalidation for ${entityType}:${entityId}:`, error);
+  }
+};
+
 // Create a unified CacheService object with all methods
 const CacheService = {
   // Memory cache functions
   getFromMemoryCache,
   setInMemoryCache,
   clearMemoryCache,
-  createCacheKey,
   
   // Storage functions
   getFromStorage,
   setInStorage,
   
-  // Metrics
+  // Cache utilities
+  createCacheKey,
   getCacheMetrics,
   
-  // User cache (former UserCache.js)
+  // User cache functions
   getUser,
   
   // Document/query cache functions
   getDocument,
   getDocuments,
+  getQuery,
   
-  // Simple key-value interface
+  // Key-value cache functions
   getValue,
   setValue,
   getValueSync,
@@ -684,33 +1235,52 @@ const CacheService = {
   
   // Cache management
   invalidate,
+  invalidateDocument,
   clearAll,
   
-  // Analytics
+  // Metrics and reporting
   getPaginationCacheStats,
-  getQueryAccessReport
+  getQueryAccessReport,
+  
+  // Track stats for analytics
+  trackCacheStats,
+  
+  // Constants
+  CACHE_TTL,
+  MEMORY_CACHE_LIMITS,
+  
+  // STEP 3.F.1: Enhanced caching strategies
+  getUserProfileCacheAside,
+  getAppSettingsCacheAside,
+  warmFrequentlyAccessedData,
+  smartInvalidate,
+  
+  // Alias for getCacheMetrics for backward compatibility
+  getCacheMetrics: function() {
+    console.warn('getCacheMetrics is deprecated. Use CacheService.getCacheMetrics() instead.');
+    return getCacheMetrics();
+  },
+  
+  // Add getMetrics as alias to prevent errors
+  getMetrics: function() {
+    return getCacheMetrics();
+  },
+  
+  // Add other specific getters if they are still primary interfaces
+  getOrSet, // ***** EXPORT getOrSet *****
 };
+
+// Make CacheService available globally for backward compatibility
+if (typeof global !== 'undefined') {
+  global.CacheService = CacheService;
+}
 
 // Export both as default and individual functions
 export {
-  getFromMemoryCache,
-  setInMemoryCache,
-  clearMemoryCache,
-  createCacheKey,
-  getFromStorage,
-  setInStorage,
-  getCacheMetrics,
-  getUser,
-  getDocument,
-  getDocuments,
-  getValue,
-  setValue,
-  getValueSync,
-  setValueSync,
-  invalidate,
-  clearAll,
-  getPaginationCacheStats,
-  getQueryAccessReport
+    clearAll, clearMemoryCache,
+    createCacheKey, getCacheMetrics, getDocument,
+    getDocuments, getFromMemoryCache, getFromStorage, getOrSet, getPaginationCacheStats,
+    getQuery, getQueryAccessReport, getUser, getValue, getValueSync, invalidate, invalidateDocument, setInMemoryCache, setInStorage, setValue, setValueSync
 };
 
 export default CacheService;

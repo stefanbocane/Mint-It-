@@ -19,41 +19,8 @@ export const calculateTimeLeft = withErrorHandling((endTime, forceCheck = false)
     if (cachedResult) return cachedResult;
   }
   
-  // Handle both Firebase Timestamp objects and serialized timestamp objects from cache
-  // that might be missing the toDate method
-  let end;
-  try {
-    if (typeof endTime.toDate === 'function') {
-      // It's a Firebase Timestamp object
-      end = endTime.toDate();
-    } else if (endTime.seconds !== undefined && endTime.nanoseconds !== undefined) {
-      // It's a serialized Timestamp object from AsyncStorage
-      end = new Date(endTime.seconds * 1000 + endTime.nanoseconds / 1000000);
-    } else if (endTime._seconds !== undefined && endTime._nanoseconds !== undefined) {
-      // Alternative format sometimes used in cached data
-      end = new Date(endTime._seconds * 1000 + endTime._nanoseconds / 1000000);
-    } else if (endTime instanceof Date) {
-      // It's already a Date object
-      end = endTime;
-    } else if (typeof endTime === 'number') {
-      // It's a timestamp in milliseconds
-      end = new Date(endTime);
-    } else if (typeof endTime === 'string') {
-      // It's an ISO date string
-      end = new Date(endTime);
-    } else {
-      // Unknown format
-      console.warn('Unknown endTime format:', endTime);
-      return 'Unknown';
-    }
-  } catch (error) {
-    handleError(error, {
-      context: 'Time Utils',
-      operation: 'Parsing end time',
-      additionalData: { endTime }
-    });
-    return 'Error';
-  }
+  const end = parseToDate(endTime);
+  if (!end) return 'Unknown';
   
   const now = new Date();
   
@@ -347,38 +314,10 @@ export const isAuctionEndingSoon = withErrorHandling((endTime, withinMinutes = 1
   if (!endTime) return false;
   
   // Handle different timestamp formats
-  let jsEndTime;
-  try {
-    if (typeof endTime.toDate === 'function') {
-      // It's a Firebase Timestamp object
-      jsEndTime = endTime.toDate();
-    } else if (endTime.seconds !== undefined && endTime.nanoseconds !== undefined) {
-      // It's a serialized Timestamp object from AsyncStorage
-      jsEndTime = new Date(endTime.seconds * 1000 + endTime.nanoseconds / 1000000);
-    } else if (endTime._seconds !== undefined && endTime._nanoseconds !== undefined) {
-      // Alternative format sometimes used in cached data
-      jsEndTime = new Date(endTime._seconds * 1000 + endTime._nanoseconds / 1000000);
-    } else if (endTime instanceof Date) {
-      // It's already a Date object
-      jsEndTime = endTime;
-    } else if (typeof endTime === 'number') {
-      // It's a timestamp in milliseconds
-      jsEndTime = new Date(endTime);
-    } else if (typeof endTime === 'string') {
-      // It's an ISO date string
-      jsEndTime = new Date(endTime);
-    } else {
-      // Unknown format
-      console.warn('Unknown endTime format in isAuctionEndingSoon:', endTime);
-      return false;
-    }
-  } catch (error) {
-    handleError(error, {
-      context: 'Time Utils',
-      operation: 'Check Auction Ending Soon',
-      additionalData: { endTimeInput: endTime, withinMinutes }
-    });
-    return false; // Default to not ending soon on error
+  const jsEndTime = parseToDate(endTime);
+  if (!jsEndTime) {
+    console.warn('Unknown endTime format in isAuctionEndingSoon:', endTime);
+    return false;
   }
   
   const now = new Date();
@@ -420,37 +359,9 @@ export const formatDate = withErrorHandling((date, defaultValue = 'Never') => {
   if (!date) return defaultValue;
   
   // Use the same parsing logic as other functions
-  let jsDate;
-  try {
-    if (typeof date.toDate === 'function') {
-      // It's a Firebase Timestamp object
-      jsDate = date.toDate();
-    } else if (date.seconds !== undefined && date.nanoseconds !== undefined) {
-      // It's a serialized Timestamp object from AsyncStorage
-      jsDate = new Date(date.seconds * 1000 + date.nanoseconds / 1000000);
-    } else if (date._seconds !== undefined && date._nanoseconds !== undefined) {
-      // Alternative format sometimes used in cached data
-      jsDate = new Date(date._seconds * 1000 + date._nanoseconds / 1000000);
-    } else if (date instanceof Date) {
-      // It's already a Date object
-      jsDate = date;
-    } else if (typeof date === 'number') {
-      // It's a timestamp in milliseconds
-      jsDate = new Date(date);
-    } else if (typeof date === 'string') {
-      // It's an ISO date string
-      jsDate = new Date(date);
-    } else {
-      // Unknown format
-      console.warn('Unknown date format in formatDate:', date);
-      return defaultValue;
-    }
-  } catch (error) {
-    handleError(error, {
-      context: 'Time Utils',
-      operation: 'Format Date',
-      additionalData: { dateInput: date, defaultValue }
-    });
+  const jsDate = parseToDate(date);
+  if (!jsDate) {
+    console.warn('Unknown date format in formatDate:', date);
     return defaultValue;
   }
   
@@ -459,6 +370,34 @@ export const formatDate = withErrorHandling((date, defaultValue = 'Never') => {
   context: 'Time Utils',
   operation: 'Format Date'
 });
+
+export function parseToDate(date) {
+  if (!date) return null;
+  if (typeof date.toDate === 'function') {
+    // It's a Firebase Timestamp object
+    return date.toDate();
+  } else if (date.seconds !== undefined && date.nanoseconds !== undefined) {
+    // It's a serialized Timestamp object from AsyncStorage
+    return new Date(date.seconds * 1000 + date.nanoseconds / 1000000);
+  } else if (date._seconds !== undefined && date._nanoseconds !== undefined) {
+    // Alternative format sometimes used in cached data
+    return new Date(date._seconds * 1000 + date._nanoseconds / 1000000);
+  } else if (date instanceof Date) {
+    // It's already a Date object
+    return date;
+  } else if (typeof date === 'number') {
+    // It's a timestamp in milliseconds
+    return new Date(date);
+  } else if (typeof date === 'string') {
+    // It's an ISO date string
+    return new Date(date);
+  } else {
+    // Unknown format
+    console.warn('Unknown date format in parseToDate:', date);
+    return null;
+  }
+}
+
 
 export default {
   formatRelativeTime,

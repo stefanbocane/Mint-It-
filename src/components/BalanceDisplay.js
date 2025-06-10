@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { StyleSheet, TouchableOpacity, View } from 'react-native';
 import { ActivityIndicator, IconButton, useTheme } from 'react-native-paper';
-import { useBalance } from '../contexts/BalanceContext';
+import { useBalance } from '../hooks/useBackwardCompatibility';
 import CoinCount from './CoinCount';
 
 const BalanceDisplay = ({ size = 'normal', showLabel = true, showRefreshButton = false }) => {

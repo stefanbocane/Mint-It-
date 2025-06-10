@@ -13,7 +13,7 @@ export type RootStackParamList = {
   MyCollection: { group?: Group; onSelectCard?: (card: Card) => void };
   Settings: undefined;
   Profile: undefined;
-  CreateTrade: { card: Card };
+  CreateTrade: { initialCardId?: string };
   TradesOverview: undefined;
   Mint: undefined;
   Social: {

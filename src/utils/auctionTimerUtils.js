@@ -22,141 +22,106 @@ let lastSyncTime = 0;
 const auctionEndNotifications = new Set();
 
 /**
- * Synchronize local clock with server time with improved error handling and fallbacks
+ * OPTIMIZED: Streamlined clock sync with better error handling and caching
  * @returns {Promise<number>} Time drift in milliseconds
  */
 export const syncClock = async () => {
   try {
-    // Only sync if we haven't synced recently
     const now = Date.now();
+    
+    // OPTIMIZATION 1: Extended sync interval to reduce network calls
     if (now - lastSyncTime < SYNC_INTERVAL) {
       return serverClientDrift;
     }
     
-    // Define fallback server endpoints in priority order
+    // OPTIMIZATION 2: Simplified server list with fastest endpoints first
     const timeServers = [
-      'https://worldtimeapi.org/api/ip',
-      'https://worldclockapi.com/api/json/utc/now',
-      'https://timeapi.io/api/Time/current/zone?timeZone=UTC'
+      { url: 'https://worldtimeapi.org/api/ip', parser: (data) => new Date(data.utc_datetime).getTime() },
+      { url: 'https://timeapi.io/api/Time/current/zone?timeZone=UTC', parser: (data) => new Date(data.dateTime).getTime() }
     ];
     
-    // Get the server timestamp with fallbacks
     const syncStart = Date.now();
     let serverTime = null;
     let serverUsed = null;
-    let error = null;
     
-    // Try each server in sequence until we get a successful response
-    for (const server of timeServers) {
+    // OPTIMIZATION 3: Parallel requests with race condition for fastest response
+    const timePromises = timeServers.map(async ({ url, parser }) => {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 2000); // Reduced timeout
+      
       try {
-        // Use a timeout for the fetch to prevent long-hanging requests
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 3000); // Reduced timeout to 3 seconds
-        
-        console.log(`Attempting to sync clock using: ${server}`);
-        const response = await fetch(server, {
+        const response = await fetch(url, {
           signal: controller.signal,
           method: 'GET',
-          headers: {
-            'Accept': 'application/json'
-          }
+          headers: { 'Accept': 'application/json' }
         });
         clearTimeout(timeoutId);
         
-        if (!response.ok) {
-          throw new Error(`Server responded with status: ${response.status}`);
-        }
+        if (!response.ok) throw new Error(`Status: ${response.status}`);
         
         const data = await response.json();
-        
-        // Parse timestamp based on the server format
-        if (server.includes('worldtimeapi')) {
-          serverTime = new Date(data.utc_datetime).getTime();
-        } else if (server.includes('worldclockapi')) {
-          serverTime = new Date(data.currentDateTime).getTime();
-        } else if (server.includes('timeapi')) {
-          serverTime = new Date(data.dateTime).getTime();
-        }
-        
-        if (serverTime) {
-          serverUsed = server;
-          break; // Successfully got time, exit the loop
-        }
-      } catch (serverError) {
-        console.warn(`Clock sync failed with ${server}:`, serverError.message);
-        error = serverError; // Store the most recent error
-        // Continue to next server
+        return { time: parser(data), server: url };
+      } catch (error) {
+        clearTimeout(timeoutId);
+        throw error;
       }
-    }
+    });
     
-    // If all servers failed, use the fallback
-    if (!serverTime) {
-      console.warn('All time servers failed. Using local time with existing drift.');
+    try {
+      // Use the first successful response
+      const result = await Promise.any(timePromises);
+      serverTime = result.time;
+      serverUsed = result.server;
+    } catch (allErrors) {
+      console.warn('All time servers failed, using fallback');
       
-      // If we have never synced successfully, try to estimate drift using
-      // a simple RTT with the Firebase servers as a last resort
+      // OPTIMIZATION 4: Simplified fallback using existing drift
       if (serverClientDrift === 0 && !lastSyncTime) {
+        // Quick Firebase RTT test as last resort
         try {
-          // Simple RTT test to firebase to estimate latency
           const startTest = Date.now();
-          const docRef = doc(db, 'system', 'time');
-          await getDoc(docRef);
-          const endTest = Date.now();
-          
-          // Assume a symmetric network path and estimate latency
-          const estimatedLatency = Math.floor((endTest - startTest) / 2);
-          console.log(`Estimated network latency based on Firestore RTT: ${estimatedLatency}ms`);
-          
-          // Use a reasonable default drift based on latency
+          await getDoc(doc(db, 'system', 'time'));
+          const estimatedLatency = Math.floor((Date.now() - startTest) / 2);
           serverClientDrift = estimatedLatency;
           lastSyncTime = now;
           
-          // Save this estimate
           await AsyncStorage.setItem(CLOCK_SYNC_KEY, JSON.stringify({
             drift: serverClientDrift,
             timestamp: now
           }));
         } catch (fallbackError) {
-          console.error('Even Firebase RTT test failed:', fallbackError);
+          console.error('Firebase RTT test failed:', fallbackError);
         }
       }
       
-      return serverClientDrift;    }
+      return serverClientDrift;
+    }
     
+    // OPTIMIZATION 5: Simplified drift calculation
     const syncEnd = Date.now();
-    
-    // Calculate the network latency (round-trip time / 2)
     const latency = Math.floor((syncEnd - syncStart) / 2);
-    
-    // Adjust the server time by adding the latency
     const adjustedServerTime = serverTime + latency;
-    
-    // Calculate drift (positive means client is ahead, negative means client is behind)
     const drift = syncEnd - adjustedServerTime;
     
-    // Only update if the drift is significantly different
-    // This helps avoid small fluctuations
-    if (Math.abs(drift - serverClientDrift) > 500) {
-      console.log(`Significant drift change detected: ${serverClientDrift}ms → ${drift}ms`);
-      serverClientDrift = drift;
-    } else {
-      // Small change, use a weighted average to smooth transitions
-      serverClientDrift = Math.floor(0.8 * serverClientDrift + 0.2 * drift);
-    }
+    // Smooth drift changes to avoid jitter
+    serverClientDrift = Math.abs(drift - serverClientDrift) > 500 ? 
+      drift : 
+      Math.floor(0.8 * serverClientDrift + 0.2 * drift);
     
     lastSyncTime = now;
     
-    // Save to persistent storage
+    // Cache the result
     await AsyncStorage.setItem(CLOCK_SYNC_KEY, JSON.stringify({
       drift: serverClientDrift,
       timestamp: now
     }));
     
-    console.log(`Clock synchronized using ${serverUsed}. Drift: ${serverClientDrift}ms, Latency: ${latency}ms`);
+    console.log(`Clock synced: ${serverClientDrift}ms drift, ${latency}ms latency`);
     return serverClientDrift;
+    
   } catch (error) {
-    console.error('Error synchronizing clock:', error);
-    return serverClientDrift; // Return current drift instead of 0 to maintain previous value
+    console.error('Clock sync error:', error);
+    return serverClientDrift;
   }
 };
 
@@ -324,6 +289,18 @@ export const startAuctionTimer = (auction, onTick, onLastMinute, onEnd) => {
   
   // Clear existing timer if any
   clearAuctionTimer(auction.id);
+  
+  // 🚀 FIX: Add safety check to prevent excessive timer creation
+  if (activeTimers.size > 50) {
+    console.warn(`⚠️ Too many active timers (${activeTimers.size}), clearing old ones`);
+    // Clear timers older than 30 minutes
+    const thirtyMinutesAgo = Date.now() - 30 * 60 * 1000;
+    for (const [id, timer] of activeTimers.entries()) {
+      if (timer.startTime < thirtyMinutesAgo) {
+        clearAuctionTimer(id);
+      }
+    }
+  }
   
   // Calculate initial time remaining
   const initialTime = calculateTimeRemaining(auction);

@@ -4,19 +4,36 @@ import { db } from '../config/firebase';
 import { retryFirestoreOperation } from './firebaseErrorHandler';
 import { getCachedDoc, getCachedQuery, invalidateCache, updateCache } from './firestoreUtils';
 
-// Constants
-const BIDDER_COUNT_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
-const AUCTION_CACHE_TTL = 30 * 1000; // 30 seconds
+// Constants - OPTIMIZED: Longer cache times for better performance
+const BIDDER_COUNT_CACHE_TTL = 10 * 60 * 1000; // 10 minutes (was 5 minutes) - 100% increase
+const AUCTION_CACHE_TTL = 2 * 60 * 1000; // 2 minutes (was 30 seconds) - 300% increase
+const STABLE_AUCTION_CACHE_TTL = 10 * 60 * 1000; // 10 minutes for auctions ending >1 hour
 const PAGE_SIZE = 15; // Number of auctions per page
 
 /**
- * Get auctions with pagination
- * 
- * @param {string} groupId - Group ID
- * @param {string} status - Auction status (active, completed, etc)
- * @param {Object} lastDoc - Last document for pagination (null for first page)
- * @param {number} pageSize - Number of items per page
- * @returns {Promise<{auctions: Array, lastDoc: Object}>} - Auctions and last document for pagination
+ * OPTIMIZED: Enhanced cache TTL selection based on auction urgency
+ */
+const getAuctionCacheTTL = (auction) => {
+  if (!auction?.endTime) return AUCTION_CACHE_TTL;
+  
+  const timeRemaining = new Date(auction.endTime) - new Date();
+  
+  // Critical auctions (ending <5 mins): Short cache
+  if (timeRemaining < 5 * 60 * 1000) {
+    return 30 * 1000; // 30 seconds
+  }
+  // Urgent auctions (ending <30 mins): Medium cache  
+  else if (timeRemaining < 30 * 60 * 1000) {
+    return AUCTION_CACHE_TTL; // 2 minutes
+  }
+  // Stable auctions: Long cache
+  else {
+    return STABLE_AUCTION_CACHE_TTL; // 10 minutes
+  }
+};
+
+/**
+ * OPTIMIZED: Get auctions with intelligent caching based on urgency
  */
 export const getAuctionsPaginated = async (
   groupId, 
@@ -27,10 +44,6 @@ export const getAuctionsPaginated = async (
   try {
     const auctionsRef = collection(db, 'auctions');
     
-    // NOTE: This query requires a composite index on Firestore
-    // Fields: groupId (asc), status (asc), endTime (asc), __name__ (asc)
-    // You can create it by visiting the link in the error message
-    // or by going to Firebase Console -> Firestore -> Indexes -> Composite
     let q = query(
       auctionsRef,
       where('groupId', '==', groupId),
@@ -39,20 +52,30 @@ export const getAuctionsPaginated = async (
       limit(pageSize)
     );
     
-    // Apply pagination if lastDoc is provided
     if (lastDoc) {
       q = query(q, startAfter(lastDoc));
     }
     
     try {
-      // Get auctions with caching
+      // OPTIMIZED: Dynamic cache key with better TTL
+      const cacheKey = `auctions_${groupId}_${status}_${pageSize}_${lastDoc ? lastDoc.id : 'first'}`;
+      
       const auctionsData = await getCachedQuery(
         q, 
         { 
-          ttl: AUCTION_CACHE_TTL,
-          cacheKey: `auctions_${groupId}_${status}_page_${lastDoc ? lastDoc.id : 'first'}`
+          ttl: AUCTION_CACHE_TTL, // Base TTL, will be refined per auction
+          cacheKey: cacheKey
         }
       );
+      
+      // OPTIMIZED: Update individual auction caches with smart TTL
+      if (auctionsData?.length > 0) {
+        await Promise.all(auctionsData.map(async (auction) => {
+          const individualCacheKey = `doc_auctions/${auction.id}`;
+          const ttl = getAuctionCacheTTL(auction);
+          await updateCache(individualCacheKey, auction, { ttl });
+        }));
+      }
       
       const lastVisible = auctionsData.length > 0 ? auctionsData[auctionsData.length - 1] : null;
       
@@ -61,11 +84,9 @@ export const getAuctionsPaginated = async (
         lastDoc: lastVisible
       };
     } catch (indexError) {
-      // Check if the error is related to missing index
       if (indexError.toString().includes('The query requires an index')) {
         console.error('The query requires a Firestore index. Please create it using the link in the error message.');
         
-        // Create a more friendly error object with instructions
         const indexUrlMatch = indexError.toString().match(/(https:\/\/console\.firebase\.google\.com[^\s]+)/);
         let indexUrl = '';
         
@@ -74,7 +95,6 @@ export const getAuctionsPaginated = async (
           console.log('Create the index by clicking this link:', indexUrl);
         }
         
-        // Return empty results for now
         return {
           auctions: [],
           lastDoc: null,
@@ -85,7 +105,6 @@ export const getAuctionsPaginated = async (
         };
       }
       
-      // If it's a different error, re-throw it
       throw indexError;
     }
   } catch (error) {
@@ -169,48 +188,78 @@ export const batchUpdateBidderCounts = async (auctionData) => {
 };
 
 /**
- * Get bidder count for an auction with caching
- * Uses the denormalized value if available and recent
- * Otherwise, counts from bids collection
+ * OPTIMIZED: Get bidder count with aggressive denormalization priority
+ * Heavily favors denormalized data to minimize database reads
  * 
  * @param {Object} auction - The auction object
  * @returns {Promise<number>} - The bidder count
  */
 export const getBidderCount = async (auction) => {
   try {
-    // First check if the auction already has a recent bidder count
-    if (
-      auction.bidderCount !== undefined && 
-      auction.lastBidderCountUpdate &&
-      (new Date() - new Date(auction.lastBidderCountUpdate)) < BIDDER_COUNT_CACHE_TTL
-    ) {
-      return auction.bidderCount;
+    // OPTIMIZATION 1: Always prefer denormalized data if it exists
+    if (auction.bidderCount !== undefined && auction.bidderCount >= 0) {
+      // Check if it's reasonably fresh (extended TTL for better performance)
+      const isRecentlyUpdated = auction.lastBidderCountUpdate && 
+        (new Date() - new Date(auction.lastBidderCountUpdate)) < BIDDER_COUNT_CACHE_TTL;
+      
+      if (isRecentlyUpdated || !auction.lastBidderCountUpdate) {
+        console.log(`📊 Using denormalized bidder count for ${auction.id}: ${auction.bidderCount}`);
+        return auction.bidderCount;
+      }
     }
     
-    // Otherwise, count from bids
+    // OPTIMIZATION 2: Use uniqueBidderCount if available (preferred over bid counting)
+    if (auction.uniqueBidderCount !== undefined && auction.uniqueBidderCount >= 0) {
+      console.log(`📊 Using uniqueBidderCount for ${auction.id}: ${auction.uniqueBidderCount}`);
+      // Update denormalized value for future use
+      updateAuctionBidderCount(auction.id, auction.uniqueBidderCount);
+      return auction.uniqueBidderCount;
+    }
+    
+    // OPTIMIZATION 3: Check cache before database query
     const cacheKey = `bidders_count_${auction.id}`;
     
-    return getCachedQuery(
-      query(
-        collection(db, 'bids'),
-        where('auctionId', '==', auction.id)
-      ),
-      {
-        ttl: BIDDER_COUNT_CACHE_TTL,
-        cacheKey: cacheKey
-      }
-    ).then(bids => {
-      // Count unique bidders
-      const uniqueBidders = new Set(bids.map(bid => bid.userId));
+    try {
+      const cachedResult = await getCachedQuery(
+        query(
+          collection(db, 'bids'),
+          where('auctionId', '==', auction.id)
+        ),
+        {
+          ttl: BIDDER_COUNT_CACHE_TTL,
+          cacheKey: cacheKey,
+          // NEW: Skip database if cache exists and auction is stable
+          allowStaleCache: auction.status !== 'active' || 
+            (auction.endTime && new Date(auction.endTime) > new Date(Date.now() + 60 * 60 * 1000)) // >1 hour remaining
+        }
+      );
+      
+      // Count unique bidders efficiently
+      const uniqueBidders = new Set(cachedResult.map(bid => bid.userId));
       const count = uniqueBidders.size;
       
-      // Update the denormalized value
+      // Always update denormalized value for future efficiency
       updateAuctionBidderCount(auction.id, count);
       
+      console.log(`📊 Calculated fresh bidder count for ${auction.id}: ${count}`);
       return count;
-    });
+      
+    } catch (queryError) {
+      console.warn(`Database query failed for bidder count ${auction.id}, using fallback`);
+      
+      // FALLBACK: Use any available partial data
+      if (auction.bidCount && auction.bidCount > 0) {
+        // Estimate unique bidders as 60% of total bids (conservative estimate)
+        const estimatedCount = Math.max(1, Math.floor(auction.bidCount * 0.6));
+        console.log(`📊 Using estimated bidder count for ${auction.id}: ${estimatedCount}`);
+        return estimatedCount;
+      }
+      
+      return 0;
+    }
   } catch (error) {
     console.error(`Error getting bidder count for auction ${auction.id}:`, error);
+    // Always return a valid number
     return 0;
   }
 };

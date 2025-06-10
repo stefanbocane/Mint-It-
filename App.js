@@ -1,108 +1,63 @@
 import { NavigationContainer } from '@react-navigation/native';
 import { getAuth, onAuthStateChanged } from 'firebase/auth';
-import { doc, getDoc } from 'firebase/firestore';
-import { memo, Suspense, useEffect, useState } from 'react';
-import { ActivityIndicator, AppState, View } from 'react-native';
-import { MD3LightTheme, Provider as PaperProvider } from 'react-native-paper';
-import { db } from './src/config/firebase';
+import React, { memo, Suspense, useEffect, useMemo, useState } from 'react';
+import { AppState, Text, View } from 'react-native';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
+import { Provider as PaperProvider } from 'react-native-paper';
 import { AuthContextProvider } from './src/contexts/AuthContext';
-import { BalanceProvider } from './src/contexts/BalanceContext';
 import { GroupProvider } from './src/contexts/GroupContext';
 import { SettingsProvider } from './src/contexts/SettingsContext';
 import { ThemeProvider, useTheme } from './src/contexts/ThemeContext';
+import { UnifiedUserDataProvider } from './src/contexts/UnifiedUserDataContext';
 import RootNavigator from './src/navigation/RootNavigator';
+import CacheService from './src/services/caching/CacheService';
+import { handleError } from './src/services/ErrorHandlingService';
 import { setupNotificationListeners } from './src/services/notifications';
+import UnifiedBootstrapService from './src/services/UnifiedBootstrapService';
 import { preWarmCache } from './src/utils/appInitializer';
-import { flushUpdateQueue } from './src/utils/batchProcessor';
 import { startCacheMaintenanceTasks, stopCacheMaintenanceTasks } from './src/utils/cacheMaintenanceUtils';
-import { clearExpiredCache } from './src/utils/cacheUtils';
-import { logDatabaseAudit } from './src/utils/databaseAudit';
 import { initializeErrorHandling } from './src/utils/firebaseErrorHandler';
-import { getCacheMetrics } from './src/utils/globalCacheManager';
-import { deleteEmptyGroups } from './src/utils/groupUtils';
-import { clearAllThrottledListeners } from './src/utils/throttledListener';
 
-// Initialize Firebase error handling utilities right away
+// OPTIMIZED: Import new optimization services
+
+const LOADING_BACKGROUND_COLOR = '#f5f5f5';
+
+// Initialize Firebase error handling utilities
 initializeErrorHandling();
 
-// Data synchronizer component that handles cache and data cleanup
+// OPTIMIZED: Initialize optimization services
+console.log('🚀 OPTIMIZED: Initializing optimization services...');
+
+// The services are singletons and self-initialize, just importing them makes them available
+console.log('✅ OPTIMIZED: Optimization services initialized');
+console.log('  - GlobalListenerCoordinator: Ready for consolidated listeners');
+console.log('  - UltraBatchService: Ready for batch operations');
+console.log('  - OptimizedStatusVerificationService: Ready for status verification');
+
+// OPTIMIZED: Unified Data Synchronizer using new bootstrap service
 const DataSynchronizer = memo(() => {
   useEffect(() => {
-    // Clean up expired cache entries on app startup
-    const initCleanup = async () => {
-      try {
-        console.log('Performing initial cache cleanup...');
-        const clearedCount = await clearExpiredCache();
-        console.log(`Cleared ${clearedCount} expired cache entries on app startup`);
-        
-        // Also check for empty groups that can be deleted
-        const groupCleanup = await deleteEmptyGroups();
-        if (groupCleanup.success) {
-          console.log(`Deleted ${groupCleanup.deleted} empty groups on app startup`);
-        }
-        
-        // Start automated cache maintenance tasks
-        startCacheMaintenanceTasks();
-        console.log('Automated cache maintenance tasks started');
-        
-        // Run initial database audit for optimization insights
-        await logDatabaseAudit();
-      } catch (error) {
-        console.error('Error during app startup cleanup:', error);
-      }
-    };
+    // Start cache maintenance tasks only (background cleanup moved to UnifiedBootstrapService)
+    startCacheMaintenanceTasks();
     
-    initCleanup();
-    
-    // Set up app state listener to optimize cache usage
     const subscription = AppState.addEventListener('change', nextAppState => {
       if (nextAppState === 'active') {
-        // App came to foreground - restart maintenance tasks
         startCacheMaintenanceTasks();
-        console.log('App is active, cache maintenance resumed');
       } else if (nextAppState === 'background') {
-        // App went to background - stop maintenance to save resources
         stopCacheMaintenanceTasks();
-        
-        // Flush any pending database operations before going to background
-        flushUpdateQueue().catch(err => console.error('Error flushing update queue:', err));
-        
-        // Log cache metrics for debugging/optimization
-        const metrics = getCacheMetrics();
-        console.log('Cache metrics before background:', metrics);
-        
-        console.log('App is in background, cache maintenance paused');
       }
     });
     
-    // Set up periodic database audits (only in dev mode)
-    let auditInterval = null;
-    if (__DEV__) {
-      auditInterval = setInterval(async () => {
-        console.log('Running periodic database audit (dev only)...');
-        await logDatabaseAudit();
-      }, 5 * 60 * 1000); // Every 5 minutes in dev mode
-    }
-    
-    // Clean up on unmount
     return () => {
       stopCacheMaintenanceTasks();
-      clearAllThrottledListeners();
       subscription.remove();
-      
-      if (auditInterval) {
-        clearInterval(auditInterval);
-      }
-      
-      console.log('Automated cache maintenance tasks stopped and listeners cleaned up');
     };
   }, []);
   
-  // This component doesn't render anything
   return null;
 });
 
-// Notification setup component to fix the deprecated function warning
+// Notification setup component
 const NotificationSetup = memo(() => {
   useEffect(() => {
     const setupNotifications = async () => {
@@ -113,6 +68,7 @@ const NotificationSetup = memo(() => {
         };
       } catch (error) {
         console.error('Error setting up notification listeners:', error);
+        handleError(error, 'Error setting up notification listeners');
       }
     };
     
@@ -127,109 +83,225 @@ const LoadingScreen = memo(() => (
     flex: 1, 
     justifyContent: 'center', 
     alignItems: 'center',
-    backgroundColor: '#f5f5f5' // You can customize this background color
+    backgroundColor: LOADING_BACKGROUND_COLOR
   }}>
-    {/* You can replace the ActivityIndicator with your own custom loading component or image */}
-    <ActivityIndicator size="large" color="#4FC3A1" />
-    {/* Add a custom text or logo below the spinner if desired */}
   </View>
 ));
 
-const theme = {
-  ...MD3LightTheme,
-  colors: {
-    ...MD3LightTheme.colors,
-    primary: '#4FC3A1',
-    secondary: '#4FC3A1',
-    background: 'transparent',
-  },
+// OPTIMIZED: Navigation tracking with Smart User Patterns integration
+const useNavigationTracker = (user, bootData) => {
+  const [navigationState, setNavigationState] = useState(null);
+  
+  const getActiveRouteName = (state) => {
+    const route = state.routes[state.index];
+    
+    if (route.state) {
+      return getActiveRouteName(route.state);
+    }
+    
+    return route.name;
+  };
+  
+  const onNavigationStateChange = async (previousState, currentState) => {
+    if (previousState && currentState) {
+      const prevRoute = getActiveRouteName(previousState);
+      const currentRoute = getActiveRouteName(currentState);
+      
+      if (prevRoute !== currentRoute) {
+        try {
+          // Track navigation with Smart User Patterns Service
+          const SmartUserPatternsService = (await import('./src/services/SmartUserPatternsService')).default;
+          
+          // Get user from context if available
+          const userId = user?.uid;
+          if (userId) {
+            await SmartUserPatternsService.trackNavigation(
+              userId,
+              prevRoute,
+              currentRoute,
+              { timestamp: Date.now(), bootData }
+            );
+          }
+          
+          if (__DEV__) {
+            console.log(`📍 Navigation tracked: ${prevRoute} → ${currentRoute}`);
+          }
+        } catch (error) {
+          console.error('Error tracking navigation:', error);
+        }
+      }
+    }
+    
+    setNavigationState(currentState);
+  };
+  
+  return { onNavigationStateChange };
 };
 
-const AppContent = memo(() => {
+// Main AppContent component with optimized providers
+const AppContent = memo(({ user, bootData }) => {
   const { theme } = useTheme();
+  const { onNavigationStateChange } = useNavigationTracker(user, bootData);
+  
+  const paperTheme = useMemo(() => ({
+    ...theme,
+    colors: {
+      ...theme.colors,
+      primary: theme.colors.primary || '#4FC3A1',
+      accent: theme.colors.accent || '#4FC3A1',
+    },
+  }), [theme]);
 
   return (
-    <PaperProvider theme={theme}>
-      <NavigationContainer>
-        <NotificationSetup />
-        <RootNavigator />
-      </NavigationContainer>
+    <PaperProvider theme={paperTheme}>
+      <UnifiedUserDataProvider>
+        <NavigationContainer 
+          theme={paperTheme}
+          onStateChange={onNavigationStateChange}
+        >
+          <DataSynchronizer />
+          <NotificationSetup />
+          <RootNavigator />
+        </NavigationContainer>
+      </UnifiedUserDataProvider>
     </PaperProvider>
   );
 });
 
-// Ensure correct provider nesting order to fix the useGroup error
+// Error boundary component to catch theme-related errors
+class ThemeErrorBoundary extends React.Component {
+  state = { hasError: false, error: null };
+
+  static getDerivedStateFromError(error) {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error, errorInfo) {
+    console.error('Theme Error:', error, errorInfo);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', padding: 20 }}>
+          <Text>Something went wrong with the theme. Please restart the app.</Text>
+          {this.state.error && <Text style={{ marginTop: 10, color: 'red' }}>{this.state.error.message}</Text>}
+        </View>
+      );
+    }
+
+    return this.props.children;
+  }
+}
+
 const App = () => {
-  // Fix the hook usage by using a custom hook for initialization
   const [user, setUser] = useState(null);
   const [currentGroup, setCurrentGroup] = useState(null);
+  const [bootData, setBootData] = useState(null);
   
   useEffect(() => {
-    // Move initialization logic into the useEffect
     const auth = getAuth();
     
-    // Set up auth state listener
     const unsubscribe = onAuthStateChanged(auth, async (authUser) => {
       if (authUser) {
-        // User is signed in
         setUser(authUser);
         
         try {
-          // Get user document to check for lastActiveGroup
-          const userDocRef = doc(db, 'users', authUser.uid);
-          const userDoc = await getDoc(userDocRef);
+          // UNIFIED BOOTSTRAP FIX: Replace 78 scattered reads with 6 coordinated reads
+          console.log('🚀 Starting unified bootstrap process...');
           
-          if (userDoc.exists() && userDoc.data().lastActiveGroup) {
-            // Get the last active group
-            const groupId = userDoc.data().lastActiveGroup;
-            const groupDocRef = doc(db, 'groups', groupId);
-            const groupDoc = await getDoc(groupDocRef);
+          // First get basic user data to find last active group
+          const userData = await CacheService.getDocument('users', authUser.uid, { 
+            ttl: 60 * 1000,
+            fields: ['lastActiveGroup', 'displayName', 'email'] // Field selection optimization
+          });
+          
+          let groupId = userData?.lastActiveGroup;
+          
+          // If user has a last active group, perform unified bootstrap
+          if (groupId) {
+            const unifiedBootData = await UnifiedBootstrapService.performUnifiedBootstrap(
+              authUser.uid, 
+              groupId, 
+              {
+                skipIfRecentlyLoaded: true,
+                prefetchUserCards: true,
+                prefetchActiveAuctions: true,
+                prefetchActiveTrades: false // Start with minimal prefetching
+              }
+            );
             
-            if (groupDoc.exists()) {
-              setCurrentGroup({
-                id: groupDoc.id,
-                ...groupDoc.data()
-              });
-            }
+            setBootData(unifiedBootData);
+            setCurrentGroup({
+              id: groupId,
+              ...unifiedBootData.group
+            });
+            
+            // Log the optimization results
+            const metrics = UnifiedBootstrapService.getBootMetrics();
+            console.log(`✅ Bootstrap completed: ${metrics.totalReads} reads (saved ${metrics.savedReads} reads)`);
+            
+          } else {
+            // New user or no active group - minimal bootstrap
+            console.log('🆕 New user detected, performing minimal bootstrap');
+            setCurrentGroup(null);
           }
+          
         } catch (error) {
-          console.error('Error fetching user data or last active group:', error);
+          console.error('Error during unified bootstrap:', error);
+          handleError(error, 'Error during unified bootstrap');
+          
+          // Fallback to basic user data fetch
+          try {
+            const userData = await CacheService.getDocument('users', authUser.uid, { ttl: 60 * 1000 });
+            if (userData?.lastActiveGroup) {
+              const groupData = await CacheService.getDocument('groups', userData.lastActiveGroup, { ttl: 2 * 60 * 1000 });
+              if (groupData) {
+                setCurrentGroup({
+                  id: userData.lastActiveGroup,
+                  ...groupData
+                });
+              }
+            }
+          } catch (fallbackError) {
+            console.error('Fallback bootstrap failed:', fallbackError);
+          }
         }
       } else {
-        // User is signed out
         setUser(null);
         setCurrentGroup(null);
+        setBootData(null);
       }
     });
     
-    // Clean up on unmount
     return () => unsubscribe();
   }, []);
   
-  // Pre-warm cache when user and group are set
   useEffect(() => {
     if (user && currentGroup) {
-      preWarmCache(user.uid, currentGroup.id)
-        .catch(err => console.warn('Error pre-warming cache:', err));
+      preWarmCache(user.uid, currentGroup.id).catch(error => {
+        console.error('Error pre-warming cache:', error);
+      });
     }
-  }, [user?.uid, currentGroup?.id]);
-  
+  }, [user, currentGroup]);
+
   return (
-    <Suspense fallback={<LoadingScreen />}>
-      <AuthContextProvider initialUser={user}>
-        <GroupProvider initialGroup={currentGroup}>
-          <BalanceProvider>
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      <ThemeErrorBoundary>
+        <Suspense fallback={<LoadingScreen />}>
+          <ThemeProvider>
             <SettingsProvider>
-              <ThemeProvider>
-                <DataSynchronizer />
-                <AppContent />
-              </ThemeProvider>
+              <AuthContextProvider initialUser={user}>
+                <GroupProvider initialGroup={currentGroup}>
+                  <AppContent user={user} bootData={bootData} />
+                </GroupProvider>
+              </AuthContextProvider>
             </SettingsProvider>
-          </BalanceProvider>
-        </GroupProvider>
-      </AuthContextProvider>
-    </Suspense>
+          </ThemeProvider>
+        </Suspense>
+      </ThemeErrorBoundary>
+    </GestureHandlerRootView>
   );
 };
 
-export default memo(App); 
+export default memo(App);

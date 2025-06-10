@@ -9,8 +9,8 @@ import {
     getCacheKeys,
     getWithCache
 } from './cacheUtils';
+import { logFirestoreError, logGeneralError } from './errorMonitor';
 import { retryFirestoreOperation } from './firebaseErrorHandler';
-import { prefetchRelatedData } from './smartPrefetch';
 import { clearThrottledListener, getThrottledListener } from './throttledListener';
 
 // Add read count tracking for rate limiting
@@ -237,11 +237,11 @@ export const getCachedDoc = async (collectionName, documentId, options = {}) => 
     
     // If this is a user document, attempt to prefetch related data
     if (collectionName === 'users') {
-      prefetchRelatedData('users', [result]);
+      safePrefetchRelatedData('users', [result]);
     } else if (collectionName === 'cards') {
-      prefetchRelatedData('cards', [result]);
+      safePrefetchRelatedData('cards', [result]);
     } else if (collectionName === 'auctions') {
-      prefetchRelatedData('auctions', [result]);
+      safePrefetchRelatedData('auctions', [result]);
     }
   }
   
@@ -315,90 +315,231 @@ export const getCachedDocFields = async (collectionName, documentId, fields = nu
 export const getCachedQuery = async (queryOrCollectionName, whereConditionsOrOptions = [], optionsParam = {}) => {
   let firestoreQuery;
   let options;
-  let cacheKey;
+  let cacheKey = null; // Initialize as null to detect when it's not set
   let collectionName;
+  let result;
+  
+  // Debug information
+  const debugInfo = {
+    queryType: typeof queryOrCollectionName,
+    isFirestoreQuery: queryOrCollectionName && typeof queryOrCollectionName === 'object',
+    optionsType: typeof whereConditionsOrOptions,
+    timestamp: new Date().toISOString()
+  };
 
-  // Check if first parameter is a Firestore query object
-  if (typeof queryOrCollectionName === 'object' && queryOrCollectionName !== null) {
-    firestoreQuery = queryOrCollectionName;
-    options = whereConditionsOrOptions || {};
+  // Log initial debug info
+  console.log('[getCachedQuery] Initial debug info:', JSON.stringify(debugInfo, null, 2));
+  
+  try {
+    // Check if first parameter is a Firestore query object
+    if (typeof queryOrCollectionName === 'object' && queryOrCollectionName !== null) {
+      try {
+        firestoreQuery = queryOrCollectionName;
+        options = whereConditionsOrOptions || {};
+        
+        // Extract collection name from query for prefetching
+        collectionName = firestoreQuery._path?.segments?.[0] || 'unknown_collection';
+        
+        // Log collection name extraction
+        console.log(`[getCachedQuery] Extracted collection name: ${collectionName}`);
+        
+        // Generate a cache key based on the query path (collection name)
+        // If a custom cacheKey is provided in options, use that instead
+        let queryHash = '';
+        try {
+          queryHash = JSON.stringify(firestoreQuery, (key, value) => {
+            // Handle circular references and functions
+            if (typeof value === 'function') return '[Function]';
+            return value;
+          });
+        } catch (stringifyError) {
+          console.error('[getCachedQuery] Error stringifying query:', stringifyError);
+          // Fallback to a simpler representation
+          queryHash = `query_${collectionName}_${Date.now()}`;
+        }
+        
+        // Log cache key generation
+        console.log(`[getCachedQuery] Generated query hash: ${queryHash.substring(0, 100)}...`);
+        
+        // Ensure we have a valid cache key
+        if (options.cacheKey) {
+          cacheKey = String(options.cacheKey).trim();
+          console.log(`[getCachedQuery] Using provided cacheKey: ${cacheKey}`);
+        } else {
+          try {
+            cacheKey = createQueryCacheKey(collectionName, { queryHash });
+            console.log(`[getCachedQuery] Generated cacheKey: ${cacheKey}`);
+          } catch (cacheKeyError) {
+            console.error('[getCachedQuery] Error creating cache key:', cacheKeyError);
+            cacheKey = `fallback_query_${collectionName}_${Date.now()}`;
+            console.log(`[getCachedQuery] Using fallback cacheKey: ${cacheKey}`);
+          }
+        }
+      } catch (queryError) {
+        console.error('[getCachedQuery] Error processing Firestore query:', {
+          error: queryError,
+          queryType: typeof queryOrCollectionName,
+          query: queryOrCollectionName
+        });
+        throw queryError;
+      }
+    } else {
+      // Original method with collection name and where conditions
+      try {
+        collectionName = queryOrCollectionName || 'unknown_collection';
+        const whereConditions = Array.isArray(whereConditionsOrOptions) ? whereConditionsOrOptions : [];
+        options = typeof whereConditionsOrOptions === 'object' && !Array.isArray(whereConditionsOrOptions) 
+          ? whereConditionsOrOptions 
+          : optionsParam || {};
+        
+        console.log(`[getCachedQuery] Processing collection query for: ${collectionName}`);
+        console.log(`[getCachedQuery] Where conditions:`, whereConditions);
+        
+        // Create a unique query params object for cache key generation
+        const queryParams = {};
+        whereConditions.forEach((condition, index) => {
+          if (Array.isArray(condition) && condition.length >= 3) {
+            queryParams[`where_${index}`] = condition.slice(0, 3);
+          }
+        });
+        
+        // Generate cache key
+        try {
+          cacheKey = createQueryCacheKey(collectionName, queryParams);
+          console.log(`[getCachedQuery] Generated cache key: ${cacheKey}`);
+        } catch (keyError) {
+          console.error('[getCachedQuery] Error generating cache key:', keyError);
+          // Fallback to a simple cache key if generation fails
+          cacheKey = `fallback_${collectionName}_${Date.now()}`;
+          console.log(`[getCachedQuery] Using fallback cache key: ${cacheKey}`);
+        }
+        
+        // Build the query with where conditions
+        const collectionRef = collection(db, collectionName);
+        
+        if (whereConditions.length > 0) {
+          firestoreQuery = query(collectionRef);
+          whereConditions.forEach(([field, operator, value]) => {
+            if (field && operator) {
+              firestoreQuery = query(firestoreQuery, where(field, operator, value));
+            }
+          });
+        } else {
+          firestoreQuery = query(collectionRef);
+        }
+        
+        console.log(`[getCachedQuery] Built Firestore query`);
+      } catch (collectionError) {
+        console.error('[getCachedQuery] Error processing collection query:', {
+          error: collectionError,
+          collection: queryOrCollectionName,
+          conditions: whereConditionsOrOptions
+        });
+        throw collectionError;
+      }
+    }
     
-    // Extract collection name from query for prefetching
-    collectionName = firestoreQuery._path?.segments?.[0] || 'unknown_collection';
+    // Final check to ensure we have a valid cache key
+    if (!cacheKey || typeof cacheKey !== 'string' || cacheKey.trim() === '') {
+      const fallbackKey = `emergency_fallback_${collectionName || 'unknown'}_${Date.now()}`;
+      console.warn('[getCachedQuery] Invalid cache key detected, using emergency fallback:', {
+        originalKey: cacheKey,
+        fallbackKey,
+        collectionName
+      });
+      cacheKey = fallbackKey;
+    }
+  
+    // Check for identical query in recent results to avoid duplicate fetches
+    const now = Date.now();
+    if (recentQueryResults.has(cacheKey)) {
+      const recentResult = recentQueryResults.get(cacheKey);
+      if (now - recentResult.timestamp < RECENT_QUERY_TTL && !options.forceRefresh) {
+        console.log(`Using recent result for ${cacheKey}, age: ${now - recentResult.timestamp}ms`);
+        return recentResult.data;
+      }
+    }
     
-    // Generate a cache key based on the query path (collection name)
-    // If a custom cacheKey is provided in options, use that instead
-    cacheKey = options.cacheKey || createQueryCacheKey(
-      collectionName,
-      { queryHash: JSON.stringify(firestoreQuery) }
-    );
-  } else {
-    // Original method with collection name and where conditions
-    collectionName = queryOrCollectionName;
-    const whereConditions = whereConditionsOrOptions || [];
-    options = optionsParam;
+    // Get with cache - ensure we pass a valid cache key
+    result = await getWithCache(cacheKey, async () => {
+      try {
+        const querySnapshot = await getDocs(firestoreQuery);
+        return querySnapshot.docs.map(doc => ({
+          id: doc.id,
+          ...doc.data()
+        }));
+      } catch (error) {
+        console.error('Error executing Firestore query:', error);
+        
+        // Log Firestore errors with context
+        if (error.message && error.message.includes('index')) {
+          logFirestoreError(error, {
+            collectionName,
+            cacheKey,
+            query: 'getCachedQuery',
+            queryType: 'collection_query'
+          });
+        } else {
+          logGeneralError(error, {
+            collectionName,
+            cacheKey,
+            function: 'getCachedQuery_fetchData'
+          });
+        }
+        
+        throw error;
+      }
+    }, options);
     
-    // Create a unique query params object for cache key generation
-    const queryParams = {};
-    whereConditions.forEach((condition, index) => {
-      queryParams[`where_${index}`] = condition;
+    // Store in recent results
+    recentQueryResults.set(cacheKey, {
+      data: result,
+      timestamp: now
     });
     
-    cacheKey = createQueryCacheKey(collectionName, queryParams);
-    
-    // Build the query with where conditions
-    const collectionRef = collection(db, collectionName);
-    
-    if (whereConditions.length > 0) {
-      firestoreQuery = query(collectionRef);
-      whereConditions.forEach(([field, operator, value]) => {
-        firestoreQuery = query(firestoreQuery, where(field, operator, value));
-      });
-    } else {
-      firestoreQuery = query(collectionRef);
+    // Prefetch related data in background if results exist
+    if (result?.length > 0) {
+      safePrefetchRelatedData(collectionName, result);
     }
-  }
-  
-  // Check for identical query in recent results to avoid duplicate fetches
-  const now = Date.now();
-  if (recentQueryResults.has(cacheKey)) {
-    const recentResult = recentQueryResults.get(cacheKey);
-    if (now - recentResult.timestamp < RECENT_QUERY_TTL && !options.forceRefresh) {
-      console.log(`Using recent result for ${cacheKey}, age: ${now - recentResult.timestamp}ms`);
-      return recentResult.data;
+    
+    return result;
+  } catch (error) {
+    console.error('Error in getCachedQuery:', {
+      error: error.message,
+      stack: error.stack,
+      cacheKey: cacheKey || 'null',
+      collectionName: collectionName || 'unknown',
+      options
+    });
+    
+    // If we have a fetch function in options, try to use it as a fallback
+    if (options?.fetchData) {
+      try {
+        console.log('Attempting to use fallback fetchData function');
+        return await options.fetchData();
+      } catch (fetchError) {
+        console.error('Fallback fetchData failed:', fetchError);
+      }
     }
-  }
-  
-  // Get with cache
-  const result = await getWithCache(cacheKey, async () => {
-    const querySnapshot = await getDocs(firestoreQuery);
-    return querySnapshot.docs.map(doc => ({
-      id: doc.id,
-      ...doc.data()
-    }));
-  }, options);
-  
-  // Store in recent results
-  recentQueryResults.set(cacheKey, {
-    data: result,
-    timestamp: now
-  });
-  
-  // Cleanup old results (periodically)
-  if (Math.random() < 0.1) { // 10% chance to clean up
-    for (const [key, value] of recentQueryResults.entries()) {
-      if (now - value.timestamp > RECENT_QUERY_TTL * 10) {
-        recentQueryResults.delete(key);
+    
+    // If we have a result from a previous operation, return it
+    if (result) {
+      return result;
+    }
+    
+    // If all else fails, rethrow the error
+    throw error;
+  } finally {
+    // Cleanup old results (periodically)
+    const now = Date.now();
+    if (Math.random() < 0.1) { // 10% chance to clean up
+      for (const [key, value] of recentQueryResults.entries()) {
+        if (now - (value?.timestamp || 0) > RECENT_QUERY_TTL * 10) {
+          recentQueryResults.delete(key);
+        }
       }
     }
   }
-  
-  // Prefetch related data in background if results exist
-  if (result?.length > 0) {
-    prefetchRelatedData(collectionName, result);
-  }
-  
-  return result;
 };
 
 /**
@@ -1285,6 +1426,52 @@ export const clearFirestoreCache = async () => {
   }
 };
 
+/**
+ * Safely import and use smartPrefetch to avoid circular dependency
+ */
+const safePrefetchRelatedData = async (entityType, entities) => {
+  try {
+    const { prefetchRelatedData } = await import('./smartPrefetch');
+    await prefetchRelatedData(entityType, entities);
+  } catch (error) {
+    // Ignore prefetch errors to avoid breaking main functionality
+    console.warn('Could not prefetch related data:', error.message);
+  }
+};
+
+/**
+ * Get user cards with caching
+ * 
+ * @param {string} userId - User ID  
+ * @param {string} groupId - Group ID
+ * @param {Object} options - Options including ttl, sortBy
+ * @returns {Promise<Array>} - Array of user cards
+ */
+export const getCachedUserCards = async (userId, groupId, options = {}) => {
+  const { ttl = CACHE_TTL.DEFAULT, sortBy = 'createdAt' } = options;
+  
+  try {
+    const cardsRef = collection(db, 'cards');
+    let cardsQuery = query(
+      cardsRef, 
+      where('ownerId', '==', userId),
+      where('groupId', '==', groupId)
+    );
+    
+    // Add ordering if specified
+    if (sortBy) {
+      cardsQuery = query(cardsQuery, orderBy(sortBy));
+    }
+    
+    const cards = await getCachedQuery(cardsQuery, { ttl });
+    return cards || [];
+    
+  } catch (error) {
+    console.error('Error fetching user cards:', error);
+    return [];
+  }
+};
+
 export default {
   getCachedDoc,
   getCachedDocFields,
@@ -1293,5 +1480,6 @@ export default {
   clearFirestoreCache,
   executeQueryWithFallback,
   extractIndexCreationUrl,
-  extractQueryDetails
+  extractQueryDetails,
+  getCachedUserCards
 }; 
