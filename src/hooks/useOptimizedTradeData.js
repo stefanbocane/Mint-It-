@@ -8,7 +8,8 @@
  * - Performance optimization and monitoring
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useFocusEffect } from '@react-navigation/native';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { useGroup } from '../contexts/GroupContext';
 import OptimizedStatusVerificationService from '../services/OptimizedStatusVerificationService';
@@ -270,12 +271,21 @@ export const useOptimizedTradeData = (options = {}) => {
     markUserActivity();
   }, []);
 
-  // Initialize trade data when dependencies change
-  useEffect(() => {
-    if (user && currentGroup && !state.initialized && autoRefresh) {
-      initializeTradeData();
-    }
-  }, [user, currentGroup, state.initialized, autoRefresh, initializeTradeData]);
+  // Screen-focused initialization to minimize idle listeners
+  useFocusEffect(
+    React.useCallback(() => {
+      if (user && currentGroup && autoRefresh) {
+        initializeTradeData();
+      }
+      return () => {
+        if (unsubscribeRef.current) {
+          unsubscribeRef.current();
+          unsubscribeRef.current = null;
+          setState(prev => ({ ...prev, initialized: false }));
+        }
+      };
+    }, [user, currentGroup, autoRefresh, initializeTradeData])
+  );
 
   // Cleanup on unmount
   useEffect(() => {

@@ -12,10 +12,10 @@ import CacheService from './caching/CacheService';
 
 // Cache TTL constants optimized for boot performance
 const BOOT_CACHE_TTL = {
-  CRITICAL: 10 * 60 * 1000,      // 10 minutes - critical boot data
-  ESSENTIAL: 5 * 60 * 1000,      // 5 minutes - essential data
-  BACKGROUND: 2 * 60 * 1000,     // 2 minutes - background data
-  DENORMALIZED: 15 * 60 * 1000   // 15 minutes - denormalized user+group data
+  CRITICAL: 30 * 60 * 1000,      // 30 minutes - critical boot data (increased)
+  ESSENTIAL: 10 * 60 * 1000,     // 10 minutes - essential data (increased)
+  BACKGROUND: 5 * 60 * 1000,     // 5 minutes - background data
+  DENORMALIZED: 30 * 60 * 1000   // 30 minutes - denormalized user+group data
 };
 
 class UnifiedBootstrapService {
