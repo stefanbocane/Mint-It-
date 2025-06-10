@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useFocusEffect } from '@react-navigation/native';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 
 import { COLLECTION_CONFIG, ERROR_CONFIG } from '../constants/collectionConstants';
 import { useAuth } from '../contexts/AuthContext';
@@ -310,22 +311,21 @@ export const useCollectionData = () => {
     await initializeData();
   }, [initializeData]);
 
-  // Initialize data when dependencies change
-  useEffect(() => {
-    if (user && currentGroup && !initialized) {
-      initializeData();
-    }
-  }, [user, currentGroup, initialized, initializeData]);
-
-  // Cleanup on unmount
-  useEffect(() => {
-    return () => {
-      if (unsubscribeRef.current) {
-        unsubscribeRef.current();
-        console.log('🧹 OPTIMIZED: Cleaned up collection listener');
+  // Activate listener only when screen is focused
+  useFocusEffect(
+    React.useCallback(() => {
+      if (user && currentGroup) {
+        initializeData();
       }
-    };
-  }, []);
+      return () => {
+        if (unsubscribeRef.current) {
+          unsubscribeRef.current();
+          unsubscribeRef.current = null;
+          setInitialized(false);
+        }
+      };
+    }, [user, currentGroup, initializeData])
+  );
 
   // Activity tracking - update activity on state changes
   useEffect(() => {

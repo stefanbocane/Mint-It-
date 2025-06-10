@@ -8,7 +8,8 @@
  * - Performance optimization and monitoring
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useFocusEffect } from '@react-navigation/native';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { GROUP_CREATED_EVENT, useGroup } from '../contexts/GroupContext';
 import AuctionService from '../services/AuctionService';
@@ -212,7 +213,8 @@ export const useAuctionData = (options = {}) => {
           enableThrottling: true,
           throttleMs: getOptimalPollingInterval(state.auctions, true),
           enableCaching: true,
-          cacheExpiryMs: CONFIG.LIMITS.CACHE_TTL
+          cacheExpiryMs: CONFIG.LIMITS.CACHE_TTL,
+          fields: ['status','minPrice','endTime','lastBidTime'] // summary-only payload
         }
       );
 
@@ -374,12 +376,21 @@ export const useAuctionData = (options = {}) => {
     }
   }, []);
 
-  // Initialize auction data when dependencies change
-  useEffect(() => {
-    if (user && currentGroup && !state.initialized) {
-      initializeAuctionData();
-    }
-  }, [user, currentGroup, state.initialized, initializeAuctionData]);
+  // Screen-focus controlled initialization
+  useFocusEffect(
+    React.useCallback(() => {
+      if (user && currentGroup && autoRefresh) {
+        initializeAuctionData();
+      }
+      return () => {
+        if (unsubscribeRef.current) {
+          unsubscribeRef.current();
+          unsubscribeRef.current = null;
+          setState(prev => ({ ...prev, initialized: false }));
+        }
+      };
+    }, [user, currentGroup, autoRefresh, initializeAuctionData])
+  );
 
   // Handle group changes
   useEffect(() => {

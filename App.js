@@ -227,7 +227,8 @@ const App = () => {
                 skipIfRecentlyLoaded: true,
                 prefetchUserCards: true,
                 prefetchActiveAuctions: true,
-                prefetchActiveTrades: false // Start with minimal prefetching
+                prefetchActiveTrades: false, // Start with minimal prefetching
+                prefetchedUser: userData
               }
             );
             

@@ -1,5 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import NetInfo from '@react-native-community/netinfo';
+import { AppState } from 'react-native';
 import * as aggregationService from './aggregationService';
 import * as dataCleanupService from './dataCleanupService';
 
@@ -58,6 +59,25 @@ export const initJobScheduler = async () => {
     }
     
     console.log('Background job scheduler initialized');
+
+    // Defer pending job execution until the app is backgrounded for at least 30s
+    let backgroundTimer = null;
+    const handleAppStateChange = (nextState) => {
+      if (nextState === 'background') {
+        // Start 30-second timer – run jobs after user leaves app
+        backgroundTimer = setTimeout(() => {
+          schedulePendingJobs().catch(console.error);
+        }, 30000);
+      } else if (nextState === 'active') {
+        // Cancel timer when user returns
+        if (backgroundTimer) {
+          clearTimeout(backgroundTimer);
+          backgroundTimer = null;
+        }
+      }
+    };
+
+    AppState.addEventListener('change', handleAppStateChange);
   } catch (error) {
     console.error('Error initializing job scheduler:', error);
   }
