@@ -185,7 +185,7 @@ const AuctionScreen = React.memo(() => {
   // THIRD PASS: Intelligent refresh control with predictive validation
   const refreshControl = useMemo(() => (
     <RefreshControl
-      refreshing={auctionHook.loading}
+      refreshing={auctionHook.refreshing}
       onRefresh={auctionHook.refresh}
       colors={[theme.colors.primary, ...REFRESH_COLORS]}
       tintColor={theme.colors.primary}
@@ -193,7 +193,7 @@ const AuctionScreen = React.memo(() => {
       titleColor={theme.colors.text}
       progressBackgroundColor={theme.colors.surface}
     />
-  ), [auctionHook.loading, auctionHook.refresh, theme.colors.primary, theme.colors.text, theme.colors.surface]);
+  ), [auctionHook.refreshing, auctionHook.refresh, theme.colors.primary, theme.colors.text, theme.colors.surface]);
 
   // Render Functions
 

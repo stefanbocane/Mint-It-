@@ -1,13 +1,13 @@
 import {
-    Alert,
-    Dimensions,
-    Platform,
-    ScrollView,
-    StyleSheet,
-    Text,
-    ToastAndroid,
-    TouchableWithoutFeedback,
-    View
+  Alert,
+  Dimensions,
+  Platform,
+  ScrollView,
+  StyleSheet,
+  Text,
+  ToastAndroid,
+  TouchableWithoutFeedback,
+  View
 } from 'react-native';
 import { Button, Divider, Portal } from 'react-native-paper';
 
@@ -405,7 +405,7 @@ const CardPreviewModal = ({
                         {canOwnCard ? (
                           <Button 
                             mode="contained" 
-                            style={[styles.actionButton, styles.ownButton]}
+                            style={styles.actionButton}
                             contentStyle={styles.ownButtonContent}
                             labelStyle={styles.ownButtonLabel}
                             onPress={ownCard}
@@ -415,26 +415,7 @@ const CardPreviewModal = ({
                           >
                             Own (+{getSellPrice(card.rarity)})
                           </Button>
-                        ) : (
-                          // Show restriction message for status marked cards
-                          <Button 
-                            mode="outlined" 
-                            style={[styles.actionButton, styles.restrictedButton]}
-                            contentStyle={styles.restrictedButtonContent}
-                            labelStyle={styles.restrictedButtonLabel}
-                            onPress={() => {
-                              Alert.alert(
-                                'Card Restricted',
-                                getCardRestrictionMessage(card),
-                                [{ text: 'OK' }]
-                              );
-                            }}
-                            icon="block-helper"
-                            disabled={false}
-                          >
-                            Restricted
-                          </Button>
-                        )}
+                        ) : null}
                       </>
                     )}
                     
@@ -450,25 +431,7 @@ const CardPreviewModal = ({
                         >
                           Download ({getDownloadPrice(card.rarity)} coins)
                         </Button>
-                      ) : (
-                        <Button 
-                          mode="outlined" 
-                          style={[styles.actionButton, styles.restrictedButton]}
-                          contentStyle={styles.restrictedButtonContent}
-                          labelStyle={styles.restrictedButtonLabel}
-                          onPress={() => {
-                            Alert.alert(
-                              'Card Restricted',
-                              getCardRestrictionMessage(card),
-                              [{ text: 'OK' }]
-                            );
-                          }}
-                          icon="block-helper"
-                          disabled={false}
-                        >
-                          Restricted
-                        </Button>
-                      )
+                      ) : null
                     )}
                     
                     {isUserAdmin && (
@@ -598,19 +561,6 @@ const styles = StyleSheet.create({
     marginBottom: 6,
     flex: 1,
     minHeight: 40,
-  },
-  restrictedButton: {
-    borderColor: '#FF5722',
-    marginBottom: 6,
-    flex: 1,
-    minHeight: 40,
-  },
-  restrictedButtonContent: {
-    padding: 8,
-  },
-  restrictedButtonLabel: {
-    fontSize: 12,
-    color: '#FF5722',
   },
   deleteButton: {
     backgroundColor: '#f44336',

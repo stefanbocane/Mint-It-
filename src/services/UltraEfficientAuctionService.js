@@ -12,15 +12,14 @@
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
-  collection,
-  doc,
-  getDoc,
-  getDocs,
-  limit,
-  query,
-  where
+    collection,
+    doc,
+    getDoc,
+    getDocs,
+    limit,
+    query,
+    where
 } from 'firebase/firestore';
-import React from 'react';
 import { create } from 'zustand';
 import { createJSONStorage, persist, subscribeWithSelector } from 'zustand/middleware';
 import { db } from '../config/firebase';
@@ -421,6 +420,10 @@ const useAuctionStore = create(
         });
         
         console.log('🧹 THIRD PASS: All auction data cleaned up');
+      },
+
+      setRefreshing: (value) => {
+        set(st => ({ groupMetadata: { ...st.groupMetadata, refreshing: value } }));
       }
     })),
     {
@@ -438,89 +441,34 @@ const useAuctionStore = create(
 // ==================== ADVANCED REACT HOOK ====================
 
 export const useUltraEfficientAuctions = (groupId) => {
-  // FIXED: Stabilize groupId to prevent unnecessary hook calls
-  const stableGroupId = React.useMemo(() => groupId, [groupId]);
+  const initializeGroup = useAuctionStore(state => state.initializeGroup);
+  const refreshGroup = useAuctionStore(state => state.refreshGroup);
+  const setRefreshing = useAuctionStore(state => state.setRefreshing);
+  const auctions = useAuctionStore(state => state.groupAuctions[groupId] || []);
+  const meta = useAuctionStore(state => state.groupMetadata[groupId] || {});
+  const refreshing = meta.refreshing || false;
   
-  // FIXED: Ultra-simple selectors to prevent infinite loops - NO useCallback
-  const storeState = useAuctionStore();
-  const auctions = storeState.groupAuctions[stableGroupId] || [];
-  const metadata = storeState.groupMetadata[stableGroupId] || { loading: true, error: null };
-  
-  // FIXED: Get function references from stable store state
-  const initializeGroup = storeState.initializeGroup;
-  const cleanupGroup = storeState.cleanupGroup;
-  const updateAuction = storeState.updateAuction;
-  const isAuctionExpiredClientSide = storeState.isAuctionExpiredClientSide;
-
-  // FIXED: Stable initialization with dependency control
-  React.useEffect(() => {
-    if (!stableGroupId) return;
-    
-    // Check if already initialized to prevent redundant calls
-    if (!metadata.initialized) {
-      console.log(`🔧 FIXED: Initializing group ${stableGroupId} (first time)`);
-      initializeGroup(stableGroupId);
+  useEffect(() => {
+    if (groupId) {
+      initializeGroup(groupId);
     }
-    
-    return () => {
-      console.log(`🧹 FIXED: Cleanup for group ${stableGroupId}`);
-      cleanupGroup(stableGroupId);
-    };
-  }, [stableGroupId]); // FIXED: Minimal dependencies - functions are stable
+  }, [groupId]);
 
-  // FIXED: Stable refresh function
-  const refresh = React.useCallback(() => {
-    if (!stableGroupId) return;
-    
-    console.log('🔄 FIXED: Manual refresh triggered for group:', stableGroupId);
-    // Use timeout to prevent immediate re-initialization conflicts
-    setTimeout(() => {
-      cleanupGroup(stableGroupId);
-      initializeGroup(stableGroupId);
-    }, 100);
-  }, [stableGroupId]); // FIXED: Minimal dependencies - functions are stable
-
-  // Update auction helper
-  const updateSingleAuction = React.useCallback((auctionId, updates) => {
-    if (stableGroupId) {
-      updateAuction(stableGroupId, auctionId, updates);
+  const refresh = useCallback(() => {
+    if (groupId) {
+      setRefreshing(true);
     }
-  }, [stableGroupId]); // FIXED: Minimal dependencies - function is stable
-
-  // THIRD PASS: Client-side expiration checker
-  const checkAuctionExpiration = React.useCallback((auction) => {
-    return isAuctionExpiredClientSide(auction.id, auction);
-  }, [isAuctionExpiredClientSide]);
-
-  // FIXED: Simplified metrics to prevent infinite loops
-  const sessionMetrics = storeState.sessionMetrics;
-  
-  const metrics = React.useMemo(() => {
-    const cacheTotal = sessionMetrics.cacheHits + sessionMetrics.cacheMisses;
-    const predictiveEfficiency = sessionMetrics.predictiveHits > 0 ? 
-      (sessionMetrics.predictiveHits / (sessionMetrics.predictiveHits + sessionMetrics.cacheMisses) * 100) : 0;
-    
-    return {
-      reads: sessionMetrics.reads,
-      cacheHits: sessionMetrics.cacheHits,
-      cacheMisses: sessionMetrics.cacheMisses,
-      cacheEfficiency: cacheTotal > 0 ? (sessionMetrics.cacheHits / cacheTotal * 100) : 0,
-      predictiveHits: sessionMetrics.predictiveHits,
-      clientSideExpirations: sessionMetrics.clientSideExpirations,
-      optimisticUpdates: sessionMetrics.optimisticUpdates,
-      predictiveEfficiency: predictiveEfficiency,
-      readEfficiencyScore: Math.max(0, 100 - (sessionMetrics.reads * 2))
-    };
-  }, [sessionMetrics]);
+    refreshGroup(groupId, { forceRefresh: true }).finally(() => {
+      setRefreshing(false);
+    });
+  }, [groupId]);
 
   return {
     auctions,
-    loading: metadata.loading,
-    error: metadata.error,
+    loading: meta.loading || false,
+    refreshing,
     refresh,
-    updateAuction: updateSingleAuction,
-    checkAuctionExpiration, // THIRD PASS: Client-side expiration checker
-    metrics
+    metrics: useAuctionStore(state => state.sessionMetrics)
   };
 };
 

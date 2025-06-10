@@ -198,8 +198,10 @@ export const useCollectionData = () => {
             const cleanedCards = enrichedCards.map(c => {
               const { _optimistic, _rollback, _originalCurrentBid, _status, ...rest } = c;
               if (rest.status === 'auction') {
-                // If auction ended, clear status
                 return { ...rest, status: undefined, inAuction: false };
+              }
+              if (rest.isMarked) {
+                return { ...rest, isMarked: false, status: undefined };
               }
               return rest;
             });
