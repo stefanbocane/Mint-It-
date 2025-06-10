@@ -27,7 +27,7 @@ if (process.env.NODE_ENV === 'production') {
   defaultConfig.resolver.platforms = ['native', 'android', 'ios'];
 }
 
-// Remove custom cache configuration that was causing issues
-// Let Metro use its default cache system
+// Invalidate cache automatically when this config changes to avoid corrupted disk cache issues
+defaultConfig.cacheVersion = '2';
 
 module.exports = defaultConfig; 
