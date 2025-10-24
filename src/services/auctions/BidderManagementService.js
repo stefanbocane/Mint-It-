@@ -5,10 +5,12 @@
  * Provides optimized database reads with pagination and advanced caching.
  */
 
-import { collection, getDocs, limit, query, startAfter, where } from 'firebase/firestore';
+import { collection, limit, query, startAfter, where } from 'firebase/firestore';
+// 🚀 TRACKED: Automatic read monitoring
 import { db } from '../../config/firebase';
 import CacheService from '../caching/CacheService';
 import ErrorHandlingService from '../ErrorHandlingService';
+import { getDocs } from '../ReadTracking/TrackedFirestore';
 import BatchBidderService from './BatchBidderService';
 
 class BidderManagementService {

@@ -14,8 +14,10 @@
  * - Memory-optimized caching
  */
 
-import { collection, getDocs, query, where } from 'firebase/firestore';
+import { collection, query, where } from 'firebase/firestore';
+// 🚀 TRACKED: Automatic read monitoring
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { getDocs } from '../services/ReadTracking/TrackedFirestore';
 
 import { db } from '../config/firebase';
 

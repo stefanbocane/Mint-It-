@@ -1,11 +1,12 @@
-import { doc, onSnapshot, runTransaction, updateDoc } from 'firebase/firestore';
+import { doc, updateDoc } from 'firebase/firestore';
+// 🚀 TRACKED: Automatic read monitoring
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { db } from '../config/firebase';
 import AuctionCompletionService from '../services/AuctionCompletionService';
 import CacheService from '../services/caching/CacheService';
-import { updateGems } from '../utils/gemOperations';
-import { useAuth } from './AuthContext';
-import { useGroup } from './GroupContext';
+import { getDoc, runTransaction } from '../services/ReadTracking/TrackedFirestore';
+import { useAuth } from './AuthContextSupabase';
+import { useGroup } from './GroupContextSupabase';
 
 // Input validation utilities
 const ValidationUtils = {
@@ -128,16 +129,25 @@ export const UnifiedUserDataProvider = ({ children }) => {
     }
     
     try {
-      const userRef = doc(db, 'users', user.uid);
+      const userRef = doc(db, 'users', user.uid, 'sessions', 'main');
       
       const result = await runTransaction(db, async (transaction) => {
         const userDoc = await transaction.get(userRef);
         
+        // If user document doesn't exist (e.g., new user or deleted), create a minimal one on-the-fly
+        let currentData;
         if (!userDoc.exists()) {
-          throw new Error('User document does not exist');
+          currentData = {
+            gems: 0,
+            groupBalances: {},
+            createdAt: new Date(),
+            lastUpdated: new Date(),
+          };
+          transaction.set(userRef, currentData); // initialize the document
+        } else {
+          currentData = userDoc.data();
         }
         
-        const currentData = userDoc.data();
         const updates = { lastUpdated: new Date() };
         const results = [];
         
@@ -233,7 +243,8 @@ export const UnifiedUserDataProvider = ({ children }) => {
     });
   }, [batchTransaction]);
 
-  // Single listener for all user data - eliminates multiple separate listeners
+  // 🚀 OPTIMIZED: Cached fetch instead of real-time listener
+  // This eliminates 30-50+ reads per session from continuous listener updates
   useEffect(() => {
     if (!user?.uid) {
       setUserData(null);
@@ -241,66 +252,69 @@ export const UnifiedUserDataProvider = ({ children }) => {
       return;
     }
 
-    setLoading(true);
-    setError(null);
+    let isMounted = true;
 
-    const userRef = doc(db, 'users', user.uid);
-    const prevDataRef = { current: null };
-    const shallowEqual = (obj1, obj2) => {
-      if (obj1 === obj2) return true;
-      if (!obj1 || !obj2) return false;
-      const keys1 = Object.keys(obj1);
-      const keys2 = Object.keys(obj2);
-      if (keys1.length !== keys2.length) return false;
-      return keys1.every(k => obj1[k] === obj2[k]);
-    };
+    const loadUserData = async () => {
+      try {
+        setLoading(true);
+        setError(null);
 
-    const unsubscribe = onSnapshot(userRef, 
-      (doc) => {
-        try {
-          if (doc.exists()) {
-            const data = { id: doc.id, ...doc.data() };
-
-            // Skip state update if nothing changed (saves renders & cache churn)
-            if (shallowEqual(prevDataRef.current, data)) {
-              return; // no-op
-            }
-
-            prevDataRef.current = data;
-
-            setUserData(data);
-            setLastUpdated(new Date());
-            
-            // Update cache for individual field access with extended TTL
-            CacheService.setValue(`unified_user_${user.uid}`, data, { 
-              ttl: 10 * 60 * 1000 // 10 minutes - longer since it's consolidated
-            });
-            
-            console.log('🔄 Unified user data updated via real-time listener');
-          } else {
-            console.warn('User document does not exist');
-            setUserData(null);
+        // 1. Check cache first (2-hour TTL for user data)
+        const cacheKey = `unified_user_${user.uid}`;
+        const cached = await CacheService.getValue(cacheKey);
+        
+        if (cached && cached.data && Date.now() - (cached.timestamp || 0) < 2 * 60 * 60 * 1000) {
+          if (isMounted) {
+            setUserData(cached.data);
+            setLastUpdated(new Date(cached.timestamp));
+            setLoading(false);
+            console.log('✅ Unified user data loaded from cache (no read)');
           }
-        } catch (err) {
-          console.error('Error processing user data snapshot:', err);
+          return;
+        }
+
+        // 2. Cache miss: fetch once from Firestore (sessions/main document where balances are stored)
+        const userSessionRef = doc(db, 'users', user.uid, 'sessions', 'main');
+        const userSnap = await getDoc(userSessionRef);
+
+        // Track read for monitoring
+
+        if (!isMounted) return;
+
+        if (userSnap.exists()) {
+          const data = { id: userSnap.id, ...userSnap.data() };
+          setUserData(data);
+          setLastUpdated(new Date());
+
+          // Cache with 2-hour TTL
+          await CacheService.setValue(cacheKey, {
+            data,
+            timestamp: Date.now()
+          }, { ttl: 2 * 60 * 60 * 1000 });
+
+          console.log('✅ Unified user data loaded from Firestore sessions/main (1 read)');
+        } else {
+          console.warn('⚠️ User session document does not exist');
+          setUserData(null);
+        }
+      } catch (err) {
+        console.error('❌ Error loading user data:', err);
+        if (isMounted) {
           setError(err);
-        } finally {
+        }
+      } finally {
+        if (isMounted) {
           setLoading(false);
         }
-      },
-      (err) => {
-        console.error('Error in unified user data listener:', err);
-        setError(err);
-        setLoading(false);
       }
-    );
+    };
+
+    loadUserData();
 
     // Cleanup function
     return () => {
-      console.log('🧹 Cleaning up UnifiedUserData listeners and pending operations...');
-      
-      // Unsubscribe from Firestore listener
-      unsubscribe();
+      isMounted = false;
+      console.log('🧹 Cleaning up UnifiedUserData and pending operations...');
       
       // Clear any pending transaction timeouts
       if (transactionTimeoutRef.current) {
@@ -351,14 +365,37 @@ export const UnifiedUserDataProvider = ({ children }) => {
       setLoading(true);
       setError(null);
 
-      const userData = await CacheService.getDocument('users', user.uid, {
-        ttl: 5 * 60 * 1000, // 5 minute cache
-        forceRefresh
-      });
+      const cacheKey = `unified_user_${user.uid}`;
+      
+      // Check cache first unless forcing refresh
+      if (!forceRefresh) {
+        const cached = await CacheService.getValue(cacheKey);
+        if (cached && cached.data && Date.now() - (cached.timestamp || 0) < 2 * 60 * 60 * 1000) {
+          setUserData(cached.data);
+          setLastUpdated(new Date(cached.timestamp));
+          console.log('✅ Fetch user data from cache (no read)');
+          return cached.data;
+        }
+      }
 
-      if (userData) {
+      // Cache miss or force refresh: fetch from Firestore (sessions/main document where balances are stored)
+      const userSessionRef = doc(db, 'users', user.uid, 'sessions', 'main');
+      const userSnap = await getDoc(userSessionRef);
+
+      // Track read
+
+      if (userSnap.exists()) {
+        const userData = { id: userSnap.id, ...userSnap.data() };
         setUserData(userData);
         setLastUpdated(new Date());
+
+        // Update cache
+        await CacheService.setValue(cacheKey, {
+          data: userData,
+          timestamp: Date.now()
+        }, { ttl: 2 * 60 * 60 * 1000 });
+
+        console.log(`✅ Fetch user data from Firestore sessions/main (1 read)${forceRefresh ? ' [forced]' : ''}`);
         return userData;
       }
       
@@ -372,8 +409,9 @@ export const UnifiedUserDataProvider = ({ children }) => {
     }
   }, [user?.uid]);
 
-  // Refresh user data (force refresh)
+  // Refresh user data (force refresh - manual only)
   const refreshUserData = useCallback(() => {
+    console.log('🔄 Manual user data refresh requested');
     return fetchUserData(true);
   }, [fetchUserData]);
 
@@ -387,7 +425,8 @@ export const UnifiedUserDataProvider = ({ children }) => {
     }
 
     try {
-      const userData = await CacheService.getDocument('users', user.uid, {
+      const sessionRef = doc(db, 'users', user.uid, 'sessions', 'main');
+      const userData = await CacheService.getDocument(sessionRef, {
         ttl: options.ttl || 2 * 60 * 1000, // 2 minute cache for individual fields
         forceRefresh: options.forceRefresh || false
       });
@@ -424,7 +463,7 @@ export const UnifiedUserDataProvider = ({ children }) => {
       }
 
       // Actual Firestore update
-      const userRef = doc(db, 'users', user.uid);
+      const userRef = doc(db, 'users', user.uid, 'sessions', 'main');
       await updateDoc(userRef, {
         [field]: value,
         lastUpdated: new Date()
@@ -474,30 +513,39 @@ export const UnifiedUserDataProvider = ({ children }) => {
         return { success: false, error, currentBalance };
       }
       
-      // Queue the operation and await result
-      const result = await queueOperation({
-        type: operationType,
-        field: `groupBalances.${targetGroupId}`,
-        amount,
-        groupId: targetGroupId
-      });
+      // Calculate new balance
+      const newBalance = operationType === 'add' ? currentBalance + amount : currentBalance - amount;
       
-      if (result.success) {
-        // Apply optimistic update only after successful queue
-        const newBalance = operationType === 'add' ? currentBalance + amount : currentBalance - amount;
+      // Apply optimistic update IMMEDIATELY for better UX
+      setUserData(prev => ({
+        ...prev,
+        groupBalances: {
+          ...prev?.groupBalances,
+          [targetGroupId]: newBalance
+        }
+      }));
+      
+      // Update Firestore IMMEDIATELY (synchronous) to prevent data loss on reload
+      try {
+        const userRef = doc(db, 'users', user.uid, 'sessions', 'main');
+        await updateDoc(userRef, {
+          [`groupBalances.${targetGroupId}`]: newBalance,
+          lastUpdated: new Date()
+        });
+        
+        console.log(`✅ ${operationType}Coins applied and persisted: ${amount} coins. Balance: ${currentBalance} → ${newBalance}`);
+        return { success: true, oldBalance: currentBalance, newBalance, amount };
+      } catch (error) {
+        console.error(`❌ Failed to persist ${operationType}Coins:`, error);
+        // Revert optimistic update on failure
         setUserData(prev => ({
           ...prev,
           groupBalances: {
             ...prev?.groupBalances,
-            [targetGroupId]: newBalance
+            [targetGroupId]: currentBalance
           }
         }));
-        
-        console.log(`✅ ${operationType}Coins queued: ${amount} coins. Balance: ${currentBalance} → ${newBalance}`);
-        return { success: true, oldBalance: currentBalance, newBalance, amount };
-      } else {
-        console.error(`❌ ${operationType}Coins failed:`, result.error);
-        return { success: false, error: result.error, currentBalance };
+        return { success: false, error: error.message, currentBalance };
       }
     } catch (error) {
       const errorMsg = error.message || 'Unknown error';
@@ -533,20 +581,56 @@ export const UnifiedUserDataProvider = ({ children }) => {
         return { success: false, error, currentGems };
       }
       
-      // Use updateGems utility for consistency
-      const gemAmount = operationType === 'subtract' ? -amount : amount;
-      const result = await updateGems(user.uid, gemAmount, {
-        groupId: targetGroupId,
-        reason: `${operationType}_gems`,
-        source: 'unified_context'
-      });
+      // Calculate new gem balance
+      const newGems = operationType === 'add' ? currentGems + amount : currentGems - amount;
       
-      if (result.success) {
-        console.log(`✅ Successfully ${operationType}ed ${amount} gems. New balance: ${result.newBalance}`);
-        return { success: true, oldBalance: currentGems, newBalance: result.newBalance, amount };
+      // Apply optimistic update IMMEDIATELY for better UX
+      if (targetGroupId) {
+        // Group-specific gems
+        setUserData(prev => ({
+          ...prev,
+          groupGems: {
+            ...prev?.groupGems,
+            [targetGroupId]: newGems
+          }
+        }));
       } else {
-        console.error(`❌ Failed to ${operationType} gems:`, result);
-        return { success: false, error: result.error || 'Unknown error', currentGems };
+        // Global gems
+        setUserData(prev => ({
+          ...prev,
+          gems: newGems
+        }));
+      }
+      
+      // Update Firestore IMMEDIATELY (synchronous) to prevent data loss on reload
+      try {
+        const userSessionRef = doc(db, 'users', user.uid, 'sessions', 'main');
+        const updateData = targetGroupId
+          ? { [`groupGems.${targetGroupId}`]: newGems, lastUpdated: new Date() }
+          : { gems: newGems, lastUpdated: new Date() };
+
+        await updateDoc(userSessionRef, updateData);
+
+        console.log(`✅ ${operationType}Gems applied and persisted: ${amount} gems. Balance: ${currentGems} → ${newGems}`);
+        return { success: true, oldBalance: currentGems, newBalance: newGems, amount };
+      } catch (error) {
+        console.error(`❌ Failed to persist ${operationType}Gems:`, error);
+        // Revert optimistic update on failure
+        if (targetGroupId) {
+          setUserData(prev => ({
+            ...prev,
+            groupGems: {
+              ...prev?.groupGems,
+              [targetGroupId]: currentGems
+            }
+          }));
+        } else {
+          setUserData(prev => ({
+            ...prev,
+            gems: currentGems
+          }));
+        }
+        return { success: false, error: error.message, currentGems };
       }
     } catch (error) {
       const errorMsg = error.message || 'Unknown error';

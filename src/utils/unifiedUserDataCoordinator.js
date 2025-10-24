@@ -5,9 +5,11 @@
  * redundant database reads and provide optimized data sharing.
  */
 
-import { doc, onSnapshot } from 'firebase/firestore';
+import { doc } from 'firebase/firestore';
+// 🚀 TRACKED: Automatic read monitoring
 import { db } from '../config/firebase';
 import CacheService from '../services/caching/CacheService';
+import { onSnapshot } from '../services/ReadTracking/TrackedFirestore';
 
 class UnifiedUserDataCoordinator {
   constructor() {

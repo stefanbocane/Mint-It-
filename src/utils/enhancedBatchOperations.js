@@ -1,6 +1,8 @@
-import { collection, doc, getDocs, limit, orderBy, query, where, writeBatch } from 'firebase/firestore';
+import { collection, doc, limit, orderBy, query, where, writeBatch } from 'firebase/firestore';
+// 🚀 TRACKED: Automatic read monitoring
 import { db } from '../config/firebase';
 import CacheService from '../services/caching/CacheService';
+import { getDocs } from '../services/ReadTracking/TrackedFirestore';
 
 /**
  * Enhanced batch operations utility for optimizing multiple database operations

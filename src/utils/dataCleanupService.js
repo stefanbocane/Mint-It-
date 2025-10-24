@@ -1,5 +1,7 @@
-import { collection, doc, getDoc, getDocs, query, Timestamp, where, writeBatch } from 'firebase/firestore';
+import { collection, doc, query, Timestamp, where, writeBatch } from 'firebase/firestore';
+// 🚀 TRACKED: Automatic read monitoring
 import { db } from '../config/firebase';
+import { getDoc, getDocs } from '../services/ReadTracking/TrackedFirestore';
 
 /**
  * Archive auctions that have been completed or cancelled for a long time

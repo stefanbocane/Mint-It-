@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 import { Button, Menu, useTheme } from 'react-native-paper';
-import { useGroup } from '../contexts/GroupContext';
+import { useGroup } from '../contexts/GroupContextSupabase';
 
 const GroupSwitcher = () => {
   const [visible, setVisible] = useState(false);

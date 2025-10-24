@@ -4,9 +4,11 @@
  * Reduces read operations by 40-60% through intelligent caching and prefetching
  */
 
-import { collection, doc, getDocs, query, updateDoc, where } from 'firebase/firestore';
+import { collection, doc, query, updateDoc, where } from 'firebase/firestore';
+// 🚀 TRACKED: Automatic read monitoring
 import { db } from '../config/firebase';
 import CacheService from '../services/caching/CacheService';
+import { getDocs } from '../services/ReadTracking/TrackedFirestore';
 
 class ProfileScreenOptimizer {
   constructor() {
@@ -86,7 +88,10 @@ class ProfileScreenOptimizer {
       return profileData;
 
     } catch (error) {
-      console.error('Error getting consolidated profile data:', error);
+      // Silenced: prefetch optimization, not critical to app function
+      if (__DEV__) {
+        console.warn('Profile data prefetch unavailable:', error.message);
+      }
       throw error;
     }
   }
@@ -175,7 +180,10 @@ class ProfileScreenOptimizer {
       return cards;
 
     } catch (error) {
-      console.error('Error in direct user cards query:', error);
+      // Silenced: prefetch optimization, not critical to app function
+      if (__DEV__) {
+        console.warn('User cards query failed:', error.message);
+      }
       return [];
     }
   }
@@ -272,7 +280,10 @@ class ProfileScreenOptimizer {
       };
 
     } catch (error) {
-      console.error('Error prefetching profile data:', error);
+      // Silenced: prefetch optimization, not critical to app function
+      if (__DEV__) {
+        console.warn('Profile prefetch failed:', error.message);
+      }
       return null;
     }
   }

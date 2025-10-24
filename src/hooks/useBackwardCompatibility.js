@@ -5,7 +5,7 @@
  * the optimized UnifiedUserDataContext underneath to eliminate redundant reads.
  */
 
-import { useUnifiedUserData } from '../contexts/UnifiedUserDataContext';
+import { useUnifiedUserData } from '../contexts/UnifiedUserDataContextSupabase';
 
 /**
  * Backward compatible hook for GemContext

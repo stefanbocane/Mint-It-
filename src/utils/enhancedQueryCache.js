@@ -1,6 +1,8 @@
 import NetInfo from '@react-native-community/netinfo';
-import { collection, doc, getDoc, getDocs, limit, orderBy, query, where } from 'firebase/firestore';
+import { collection, doc, limit, orderBy, query, where } from 'firebase/firestore';
+// 🚀 TRACKED: Automatic read monitoring
 import { db } from '../config/firebase';
+import { getDoc, getDocs } from '../services/ReadTracking/TrackedFirestore';
 import {
     CACHE_TTL,
     createDocCacheKey,

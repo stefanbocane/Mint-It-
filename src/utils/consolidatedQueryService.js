@@ -3,9 +3,11 @@
  * Reduces reads by batching similar queries and smart result sharing
  */
 
-import { collection, getDocs, query, where } from 'firebase/firestore';
+import { collection, query, where } from 'firebase/firestore';
+// 🚀 TRACKED: Automatic read monitoring
 import { db } from '../config/firebase';
 import CacheService from '../services/caching/CacheService';
+import { getDocs } from '../services/ReadTracking/TrackedFirestore';
 
 /**
  * Consolidated card fetching for CreateTradeScreen patterns

@@ -10,9 +10,9 @@
 
 import { useFocusEffect } from '@react-navigation/native';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { useAuth } from '../contexts/AuthContext';
-import { GROUP_CREATED_EVENT, useGroup } from '../contexts/GroupContext';
-import AuctionService from '../services/AuctionService';
+import { useAuth } from '../contexts/AuthContextSupabase';
+import { GROUP_CREATED_EVENT, useGroup } from '../contexts/GroupContextSupabase';
+import AuctionService from '../services/AuctionServiceSupabase';
 import OptimizedStatusVerificationService from '../services/OptimizedStatusVerificationService';
 import UltraBatchService from '../services/UltraBatchService';
 import CacheService from '../services/caching/CacheService';

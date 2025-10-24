@@ -1,17 +1,11 @@
-import { db } from '../config/firebase';
-import { 
-  doc, 
-  getDoc, 
-  runTransaction, 
-  serverTimestamp, 
-  collection, 
-  addDoc,
-  query,
-  where,
-  orderBy,
-  limit,
-  getDocs
+import {
+    collection,
+    doc,
+    serverTimestamp
 } from 'firebase/firestore';
+import { db } from '../config/firebase';
+// 🚀 TRACKED: Automatic read monitoring
+import { getDoc, runTransaction } from '../services/ReadTracking/TrackedFirestore';
 
 // Rate limiting configuration
 const RATE_LIMIT = {
@@ -70,11 +64,12 @@ const updateBalanceInTransaction = async (userId, groupId, amount, metadata = {}
 
   try {
     const result = await runTransaction(db, async (transaction) => {
-      const userRef = doc(db, 'users', userId);
+      // CRITICAL FIX: Use sessions/main path consistently
+      const userRef = doc(db, 'users', userId, 'sessions', 'main');
       const userDoc = await transaction.get(userRef);
-      
+
       if (!userDoc.exists()) {
-        throw new Error('User not found');
+        throw new Error('User session not found');
       }
 
       const userData = userDoc.data();
@@ -130,11 +125,12 @@ export const getBalance = async (userId, groupId) => {
   if (!userId || !groupId) return 0;
 
   try {
-    const userRef = doc(db, 'users', userId);
+    // CRITICAL FIX: Use sessions/main path consistently
+    const userRef = doc(db, 'users', userId, 'sessions', 'main');
     const userDoc = await getDoc(userRef);
-    
+
     if (!userDoc.exists()) return 0;
-    
+
     const userData = userDoc.data();
     return userData.groupBalances?.[groupId] || 0;
   } catch (error) {

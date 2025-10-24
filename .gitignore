@@ -78,3 +78,4 @@ GoogleService-Info.plist
 
 # OS generated files
 Thumbs.db
+.env.supabase

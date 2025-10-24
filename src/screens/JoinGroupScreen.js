@@ -1,15 +1,11 @@
 import { useNavigation } from '@react-navigation/native';
-import { collection, doc, getDocs, query, setDoc, updateDoc, where } from 'firebase/firestore';
 import { useEffect, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 import { Appbar, Button, Card, HelperText, Text, TextInput, useTheme } from 'react-native-paper';
 import ScreenBackground from '../components/ScreenBackground';
-import { db } from '../config/firebase';
-import { useAuth } from '../contexts/AuthContext';
-import { useGroup } from '../contexts/GroupContext';
-import CacheService from '../services/caching/CacheService';
-import { handleOneTimeInitialCoinAward } from '../utils/balanceUtils';
-import { checkGroupMembershipLimit } from '../utils/cardLimits';
+import { supabase } from '../config/supabase';
+import { useAuth } from '../contexts/AuthContextSupabase';
+import { useGroup } from '../contexts/GroupContextSupabase';
 
 const JoinGroupScreen = () => {
   const navigation = useNavigation();
@@ -28,97 +24,191 @@ const JoinGroupScreen = () => {
 
   const fetchGroups = async () => {
     setLoading(true);
+    setError('');
     try {
-      const groupsQuery = query(
-        collection(db, 'groups'),
-        where('isPrivate', '==', false)
-      );
-      const snapshot = await getDocs(groupsQuery);
-      const groupsData = snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
+      console.log('🔍 Fetching public groups from Supabase...');
+
+      const { data: groupsData, error: fetchError } = await supabase
+        .from('groups')
+        .select('*')
+        .eq('is_private', false)
+        .order('created_at', { ascending: false });
+
+      if (fetchError) {
+        console.error('❌ Error fetching groups:', fetchError);
+        throw fetchError;
+      }
+
+      console.log(`✅ Found ${groupsData?.length || 0} public groups`);
+
+      const formattedGroups = (groupsData || []).map(g => ({
+        id: g.id,
+        name: g.name,
+        description: g.description,
+        isPrivate: g.is_private,
+        memberCount: g.member_count || 0
       }));
-      setGroups(groupsData);
+
+      setGroups(formattedGroups);
+
+      if (formattedGroups.length === 0) {
+        console.log('⚠️ No public groups found. User may need to create one.');
+      }
     } catch (error) {
-      console.error('Error fetching groups:', error);
-      setError('Failed to load groups');
+      console.error('❌ Error in fetchGroups:', error);
+      setError(`Failed to load groups: ${error.message}`);
     } finally {
       setLoading(false);
     }
   };
 
-  const handleJoinGroup = async () => {
-    if (!user || !user.uid) {
+  const handleJoinGroup = async (groupName = null) => {
+    console.log('🔵 Starting handleJoinGroup...');
+
+    if (!user || !user.id) {
+      console.error('❌ No user logged in');
       setError('You must be logged in to join a group.');
       return;
     }
-    if (!code.trim()) {
+
+    const nameToJoin = groupName || code.trim();
+    if (!nameToJoin) {
+      console.error('❌ No group name provided');
       setError('Group name is required');
       return;
     }
+
+    console.log(`🔍 Attempting to join group: "${nameToJoin}"`);
+    console.log(`👤 User ID: ${user.id}`);
 
     try {
       setLoading(true);
       setError('');
 
-      // Check group membership limit first
-      const limitCheck = await checkGroupMembershipLimit(user.uid);
-      if (!limitCheck.canJoin) {
-        setError(`You have reached the maximum of ${limitCheck.limit} groups. You are currently in ${limitCheck.currentCount} groups.`);
+      // Find the group by name (case-insensitive)
+      console.log('📡 Step 1: Searching for group...');
+      const { data: groupsData, error: searchError } = await supabase
+        .from('groups')
+        .select('*')
+        .ilike('name', nameToJoin)
+        .limit(1);
+
+      if (searchError) {
+        console.error('❌ Error searching for group:', searchError);
+        setError(`Database error: ${searchError.message}`);
         return;
       }
 
-      // Find the group by name
-      const groupsRef = collection(db, 'groups');
-      const q = query(groupsRef, where('name', '==', code.trim()));
-      const querySnapshot = await getDocs(q);
+      console.log(`📦 Search result:`, groupsData);
 
-      if (querySnapshot.empty) {
-        setError('Invalid group name');
+      if (!groupsData || groupsData.length === 0) {
+        console.error(`❌ Group "${nameToJoin}" not found in database`);
+        setError(`Group "${nameToJoin}" not found. Please check the name and try again.`);
         return;
       }
 
-      const groupDoc = querySnapshot.docs[0];
-      const groupData = groupDoc.data();
+      const group = groupsData[0];
+      console.log(`✅ Found group:`, { id: group.id, name: group.name, members: group.members?.length });
 
-      // Check if user is already a member using cache
-      const memberData = await CacheService.getDocument(`groups/${groupDoc.id}/members`, user.uid, { ttl: 60 * 1000 });
-
-      if (memberData) {
+      // Check if user is already a member
+      const currentMembers = group.members || [];
+      if (currentMembers.includes(user.id)) {
+        console.warn('⚠️ User is already a member');
         setError('You are already a member of this group');
         return;
       }
 
-      // Add user to group members
-      const memberRef = doc(db, 'groups', groupDoc.id, 'members', user.uid);
-      await setDoc(memberRef, {
-        role: 'member',
-        joinedAt: new Date().toISOString()
-      });
+      // Check group membership limit (max 5 groups)
+      console.log('📡 Step 2: Checking user group count...');
+      const { data: userGroups, error: countError } = await supabase
+        .from('groups')
+        .select('id')
+        .contains('members', [user.id]);
 
-      // Update group member count
-      await updateDoc(doc(db, 'groups', groupDoc.id), {
-        memberCount: groupData.memberCount + 1,
-        members: [...(groupData.members || []), user.uid]
-      });
+      if (countError) {
+        console.error('⚠️ Error checking group count:', countError);
+        // Continue anyway
+      }
 
-      // Invalidate relevant caches
-      await CacheService.invalidate(`groups/${groupDoc.id}/members:${user.uid}`);
-      await CacheService.invalidate(`groups:${groupDoc.id}`);
+      const currentGroupCount = userGroups?.length || 0;
+      console.log(`📊 User is in ${currentGroupCount} groups`);
 
-      // Award initial coins using the robust utility
-      const coinResult = await handleOneTimeInitialCoinAward(user.uid, groupDoc.id, 100);
-      console.log('Initial coin award result:', coinResult);
-      
+      if (currentGroupCount >= 5) {
+        console.error('❌ User has reached group limit');
+        setError(`You have reached the maximum of 5 groups. You are currently in ${currentGroupCount} groups.`);
+        return;
+      }
+
+      // Add user to group members array
+      const updatedMembers = [...currentMembers, user.id];
+      console.log(`📡 Step 3: Adding user to group (${currentMembers.length} → ${updatedMembers.length} members)...`);
+
+      // Update group with new member
+      const { error: updateError } = await supabase
+        .from('groups')
+        .update({
+          members: updatedMembers,
+          member_count: updatedMembers.length
+        })
+        .eq('id', group.id);
+
+      if (updateError) {
+        console.error('❌ Error updating group:', updateError);
+        setError(`Failed to join group: ${updateError.message}`);
+        return;
+      }
+
+      console.log('✅ Successfully added to group members');
+
+      // Award initial coins (100 coins for joining)
+      console.log('📡 Step 4: Awarding initial coins...');
+      try {
+        const { error: balanceError } = await supabase.rpc('update_user_balance', {
+          p_user_id: user.id,
+          p_group_id: group.id,
+          p_amount: 100,
+          p_context: 'initial_group_join'
+        });
+
+        if (balanceError) {
+          console.warn('⚠️ Error awarding initial coins:', balanceError.message);
+          // Don't fail the join if coin award fails
+        } else {
+          console.log('✅ Awarded 100 coins');
+        }
+      } catch (coinError) {
+        console.warn('⚠️ Coin award failed (non-critical):', coinError.message);
+      }
+
+      console.log('🔄 Step 5: Refreshing groups list...');
+
       // Refresh the groups list and switch to the new group
       await refreshGroups();
-      const updatedGroup = { id: groupDoc.id, ...groupData };
-      switchGroup(updatedGroup);
-      
+
+      const formattedGroup = {
+        id: group.id,
+        name: group.name,
+        description: group.description,
+        isPrivate: group.is_private,
+        memberCount: updatedMembers.length
+      };
+
+      console.log('🔄 Step 6: Switching to new group...');
+      switchGroup(formattedGroup);
+
+      console.log('✅ Successfully joined group:', group.name);
+      console.log('🔙 Navigating back...');
+
       navigation.goBack();
     } catch (error) {
-      console.error('Error joining group:', error);
-      setError('Failed to join group. Please try again.');
+      console.error('❌ Unexpected error in handleJoinGroup:', error);
+      console.error('Error details:', {
+        message: error.message,
+        code: error.code,
+        details: error.details,
+        hint: error.hint
+      });
+      setError(`Failed to join group: ${error.message}`);
     } finally {
       setLoading(false);
     }
@@ -218,10 +308,8 @@ const JoinGroupScreen = () => {
               <Card.Actions>
                 <Button
                   mode="contained"
-                  onPress={() => {
-                    setCode(group.name);
-                    handleJoinGroup();
-                  }}
+                  onPress={() => handleJoinGroup(group.name)}
+                  disabled={loading}
                 >
                   Join Group
                 </Button>

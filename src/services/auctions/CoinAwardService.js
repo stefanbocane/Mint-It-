@@ -5,10 +5,12 @@
  * Ensures sellers receive appropriate compensation with proper transaction logging.
  */
 
-import { addDoc, collection, doc, getDoc, increment, serverTimestamp, updateDoc } from 'firebase/firestore';
+import { addDoc, collection, doc, increment, serverTimestamp, updateDoc } from 'firebase/firestore';
+// 🚀 TRACKED: Automatic read monitoring
 import { db } from '../../config/firebase';
 import CacheService from '../caching/CacheService';
 import ErrorHandlingService from '../ErrorHandlingService';
+import { getDoc } from '../ReadTracking/TrackedFirestore';
 
 class CoinAwardService {
   static CONFIG = {
@@ -196,7 +198,7 @@ class CoinAwardService {
       }
 
       // Fetch from database
-      const userDoc = await getDoc(doc(db, 'users', userId));
+      const userDoc = await getDoc(doc(db, 'users', userId, 'sessions', 'main'));
       
       if (!userDoc.exists()) {
         console.warn(`User ${userId} not found`);

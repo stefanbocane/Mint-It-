@@ -1,5 +1,7 @@
-import { arrayUnion, collection, doc, getDoc, getDocs, setDoc, updateDoc } from 'firebase/firestore';
+import { arrayUnion, collection, doc, setDoc, updateDoc } from 'firebase/firestore';
+// 🚀 TRACKED: Automatic read monitoring
 import { db } from '../config/firebase';
+import { getDoc, getDocs } from '../services/ReadTracking/TrackedFirestore';
 
 /**
  * Adds coins to a user's balance for a specific group
@@ -561,17 +563,14 @@ export const ensureInitialRewardProtection = async (userId, groupId, source = 'u
   try {
     console.log(`[PROTECTION] ${source}: Checking protections for ${userId} in group ${groupId}`);
     
-    // Get user document
-    const userRef = doc(db, 'users', userId);
-    const userDoc = await getDoc(userRef);
+    // Use GlobalUserProfileCache instead of direct fetch
+    const GlobalUserProfileCache = require('../services/GlobalUserProfileCache').default;
+    const userData = await GlobalUserProfileCache.getProfile(userId);
     
-    if (!userDoc.exists()) {
+    if (!userData) {
       console.log(`[PROTECTION] ${source}: User document doesn't exist`);
       return false;
     }
-    
-    // Get current data
-    const userData = userDoc.data();
     const groupBalances = userData.groupBalances || {};
     const currentBalance = groupBalances[groupId] || 0;
     const initialRewardGroups = Array.isArray(userData.initialRewardGroups) 
@@ -585,12 +584,18 @@ export const ensureInitialRewardProtection = async (userId, groupId, source = 'u
     if (currentBalance <= 5 && !initialRewardGroups.includes(groupId)) {
       console.log(`[PROTECTION] ${source}: Adding protection for ${userId} in group ${groupId}`);
       
+      // Create userRef for update operation
+      const userRef = doc(db, 'users', userId);
+      
       // Update user document to mark this group as having received initial reward
       await updateDoc(userRef, {
         initialRewardGroups: arrayUnion(groupId),
         protectionTimestamp: new Date().toISOString(),
         protectionSource: source
       });
+      
+      // Invalidate cache after update
+      GlobalUserProfileCache.invalidateProfile(userId);
       
       return true;
     }

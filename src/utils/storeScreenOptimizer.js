@@ -4,9 +4,11 @@
  * Reduces read operations by 50-70% through caching and query optimization
  */
 
-import { collection, getDocs, limit, query, where } from 'firebase/firestore';
+import { collection, limit, query, where } from 'firebase/firestore';
+// 🚀 TRACKED: Automatic read monitoring
 import { db } from '../config/firebase';
 import CacheService from '../services/caching/CacheService';
+import { getDocs } from '../services/ReadTracking/TrackedFirestore';
 
 class StoreScreenOptimizer {
   constructor() {
@@ -67,7 +69,10 @@ class StoreScreenOptimizer {
       return storeData;
 
     } catch (error) {
-      console.error('Error getting store user data:', error);
+      // Silenced: Firebase not available, store needs Supabase migration
+      if (__DEV__) {
+        console.warn('Store user data unavailable (Firebase → Supabase migration pending)');
+      }
       throw error;
     }
   }
@@ -106,7 +111,10 @@ class StoreScreenOptimizer {
       return cardsData;
 
     } catch (error) {
-      console.error('Error preloading user cards for store:', error);
+      // Silenced: prefetch optimization, not critical to app function
+      if (__DEV__) {
+        console.warn('User cards preload failed:', error.message);
+      }
       return [];
     }
   }
@@ -145,7 +153,10 @@ class StoreScreenOptimizer {
       return cards;
 
     } catch (error) {
-      console.error('Error in batch user cards query:', error);
+      // Silenced: prefetch optimization, not critical to app function
+      if (__DEV__) {
+        console.warn('Batch user cards query failed:', error.message);
+      }
       return [];
     }
   }
@@ -295,7 +306,10 @@ class StoreScreenOptimizer {
       };
 
     } catch (error) {
-      console.error('Error prefetching store screen data:', error);
+      // Silenced: prefetch optimization, not critical to app function
+      if (__DEV__) {
+        console.warn('Store screen prefetch failed:', error.message);
+      }
       return null;
     }
   }

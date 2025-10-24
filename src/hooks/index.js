@@ -5,6 +5,6 @@ export { useUserData } from './useUserData';
 export { default as CacheService } from '../services/caching/CacheService';
 
 // Export optimized query utilities
-export { UnifiedUserDataProvider, useUnifiedUserData } from '../contexts/UnifiedUserDataContext';
+export { UnifiedUserDataProvider, useUnifiedUserData } from '../contexts/UnifiedUserDataContextSupabase';
 export { BatchOperationManager, batchedUpdateDoc } from '../utils/enhancedBatchOperations';
 export { fetchUserCardsOptimized } from '../utils/queryOptimizer';

@@ -2,8 +2,8 @@ import { useFocusEffect } from '@react-navigation/native';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 
 import { COLLECTION_CONFIG, ERROR_CONFIG } from '../constants/collectionConstants';
-import { useAuth } from '../contexts/AuthContext';
-import { useGroup } from '../contexts/GroupContext';
+import { useAuth } from '../contexts/AuthContextSupabase';
+import { useGroup } from '../contexts/GroupContextSupabase';
 import OptimizedStatusVerificationService from '../services/OptimizedStatusVerificationService';
 import UltraBatchService from '../services/UltraBatchService';
 import CacheService from '../services/caching/CacheService';

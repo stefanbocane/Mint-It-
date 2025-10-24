@@ -5,8 +5,8 @@ import { ActivityIndicator, Appbar, Button, Card, Divider, Surface, Text, useThe
 import CardItem from '../components/CardItem';
 import ScreenBackground from '../components/ScreenBackground';
 import { db } from '../config/firebase';
-import { useAuth } from '../contexts/AuthContext';
-import { useGroup } from '../contexts/GroupContext';
+import { useAuth } from '../contexts/AuthContextSupabase';
+import { useGroup } from '../contexts/GroupContextSupabase';
 import CacheService from '../services/caching/CacheService';
 import GroupMembersLookupService from '../services/GroupMembersLookupService';
 import { sendTradeOfferNotification } from '../services/notifications';
@@ -70,9 +70,10 @@ const CreateTradeScreen = ({ navigation, route }) => {
       const groupMembers = await GroupMembersLookupService.getGroupMembers(currentGroup.id, {
         ttl: 5 * 60 * 1000 // 5 minute cache
       });
-      
-      // Filter out current user
-      const otherMembers = groupMembers.filter(member => member.id !== user.uid);
+
+      // Filter out current user (check both user.id and user.uid for compatibility)
+      const currentUserId = user?.id || user?.uid;
+      const otherMembers = groupMembers.filter(member => member.id !== currentUserId);
       setMembers(otherMembers);
     } catch (error) {
       console.error('Error loading members:', error);
@@ -106,202 +107,105 @@ const CreateTradeScreen = ({ navigation, route }) => {
     }
   };
 
-  // OPTIMIZED: Use consolidated query service to replace dual query pattern
+  // Load user's own cards for trading (Supabase version)
   const loadUserCards = async () => {
     if (!user || !currentGroup) return;
     setLoadingCards(true);
-    
+
     try {
-      console.log('🚀 Loading user cards for trading with optimized service...');
-      
-      // Use the optimized consolidated query service instead of dual queries
-      const cards = await consolidatedQueryService.getCardsForTradeCreation(user.uid, currentGroup.id, {
-        ttl: 2 * 60 * 1000 // 2 minute cache
-      });
-      
-      console.log(`✅ Optimized service returned ${cards.length} cards`);
-      
-      // Process all cards with batch status verification
-      const statusFixedCards = [];
-      await verifyCardStatusesBatch(cards, statusFixedCards);
-      
-      // Filter valid cards
-      const validCards = cards.filter(card => 
-        card.name && card.imageUrl && card.rarity && !card.inTrade && !card.inAuction
-      );
-      
-      console.log(`📊 Total valid cards for trading: ${validCards.length}`);
-      if (statusFixedCards.length > 0) {
-        console.log(`🔧 Fixed status for ${statusFixedCards.length} cards`);
+      const currentUserId = user?.id || user?.uid;
+      const { supabase } = await import('../config/supabase');
+
+      // Fetch user's cards that are available for trading
+      const { data: cards, error } = await supabase
+        .from('cards')
+        .select('*')
+        .eq('owner_id', currentUserId)
+        .eq('group_id', currentGroup.id)
+        .eq('in_trade', false)
+        .eq('in_auction', false)
+        .eq('status', 'available');
+
+      if (error) {
+        console.error('Error loading user cards:', error);
+        throw error;
       }
-      
+
+      // Map Supabase fields to expected format
+      const validCards = (cards || []).map(card => ({
+        id: card.id,
+        name: card.name,
+        imageUrl: card.image_url,
+        rarity: card.rarity,
+        ownerId: card.owner_id,
+        groupId: card.group_id,
+        inTrade: card.in_trade,
+        inAuction: card.in_auction,
+        status: card.status,
+        setName: card.set_name,
+        number: card.number
+      }));
+
+      console.log(`✅ Loaded ${validCards.length} cards for trading`);
       setUserCards(validCards);
       setSelectedCards([]);
     } catch (error) {
-      console.error('❌ Error in optimized loadUserCards:', error);
-      
-      // Fallback to original dual query implementation
-      console.log('⚠️  Falling back to original dual query implementation');
-      await loadUserCardsOriginal();
+      console.error('Error loading user cards:', error);
+      Alert.alert('Error', 'Failed to load your cards. Please try again.');
+      setUserCards([]);
     } finally {
       setLoadingCards(false);
     }
   };
 
-  // Original implementation as fallback
-  const loadUserCardsOriginal = async () => {
-    try {
-      console.log('Loading user cards for trading (fallback mode)...');
-      const cardsRef = collection(db, 'cards');
-      
-      const ownerQuery = query(
-        cardsRef,
-        where('ownerId', '==', user.uid),
-        where('groupId', '==', currentGroup.id)
-      );
-      
-      const userIdQuery = query(
-        cardsRef,
-        where('userId', '==', user.uid),
-        where('groupId', '==', currentGroup.id)
-      );
-      
-      const [ownerQuerySnapshot, userIdQuerySnapshot] = await Promise.all([
-        getDocs(ownerQuery),
-        getDocs(userIdQuery)
-      ]);
-      
-      console.log(`Found ${ownerQuerySnapshot.docs.length} cards with ownerId and ${userIdQuerySnapshot.docs.length} cards with userId (fallback)`);
-      
-      const cardMap = new Map();
-      
-      ownerQuerySnapshot.docs.forEach(doc => {
-        cardMap.set(doc.id, { id: doc.id, ...doc.data() });
-      });
-      
-      userIdQuerySnapshot.docs.forEach(doc => {
-        if (!cardMap.has(doc.id)) {
-          cardMap.set(doc.id, { id: doc.id, ...doc.data() });
-        }
-      });
-      
-      const statusFixedCards = [];
-      await verifyCardStatusesBatch(cardMap.values(), statusFixedCards);
-      
-      const validCards = Array.from(cardMap.values()).filter(card => 
-        card.name && card.imageUrl && card.rarity && !card.inTrade && !card.inAuction
-      );
-      
-      console.log(`Total valid cards for trading: ${validCards.length} (fallback)`);
-      setUserCards(validCards);
-      setSelectedCards([]);
-    } catch (error) {
-      console.error('Error in fallback loadUserCards:', error);
-      Alert.alert('Error', 'Failed to load your cards. Please try again.');
-    }
-  };
 
-  // Helper function to batch verify card statuses using optimized readOptimizer
-  const verifyCardStatusesBatch = async (cards, statusFixedCards) => {
-    try {
-      const { batchVerifyCardStatuses } = await import('../utils/readOptimizer');
-      await batchVerifyCardStatuses(cards, statusFixedCards);
-    } catch (error) {
-      console.error('Error in optimized batch card status verification:', error);
-    }
-  };
-
-  // OPTIMIZED: Use consolidated query service for selected user cards
+  // Load selected user's cards (Supabase version)
   const loadSelectedUserCards = async () => {
     if (!currentGroup || !selectedUser) return;
     setLoadingCards(true);
+
     try {
-      console.log(`🚀 Loading cards for user ${selectedUser.id} in group ${currentGroup.id} with optimized service...`);
-      
-      // Use the optimized consolidated query service
-      const cards = await consolidatedQueryService.getCardsForTradeCreation(selectedUser.id, currentGroup.id, {
-        ttl: 2 * 60 * 1000 // 2 minute cache
-      });
-      
-      console.log(`✅ Optimized service returned ${cards.length} cards for selected user`);
-      
-      // Filter valid cards (include all cards, not just those not in trade/auction)
-      const validCards = cards.filter(card => 
-        card.name && card.imageUrl && card.rarity
-      );
-      
-      console.log(`📊 Total valid cards for selected user: ${validCards.length}`);
+      const { supabase } = await import('../config/supabase');
+
+      // Fetch selected user's cards (show all cards, not just available ones)
+      const { data: cards, error } = await supabase
+        .from('cards')
+        .select('*')
+        .eq('owner_id', selectedUser.id)
+        .eq('group_id', currentGroup.id);
+
+      if (error) {
+        console.error('Error loading selected user cards:', error);
+        throw error;
+      }
+
+      // Map Supabase fields to expected format
+      const validCards = (cards || []).map(card => ({
+        id: card.id,
+        name: card.name,
+        imageUrl: card.image_url,
+        rarity: card.rarity,
+        ownerId: card.owner_id,
+        groupId: card.group_id,
+        inTrade: card.in_trade,
+        inAuction: card.in_auction,
+        status: card.status,
+        setName: card.set_name,
+        number: card.number
+      }));
+
+      console.log(`✅ Loaded ${validCards.length} cards for selected user`);
       setSelectedUserCards(validCards);
       setRequestedCards([]);
     } catch (error) {
-      console.error('❌ Error in optimized loadSelectedUserCards:', error);
-      
-      // Fallback to original implementation
-      console.log('⚠️  Falling back to original dual query for selected user');
-      await loadSelectedUserCardsOriginal();
+      console.error('Error loading selected user cards:', error);
+      Alert.alert('Error', 'Failed to load user cards. Please try again.');
+      setSelectedUserCards([]);
     } finally {
       setLoadingCards(false);
     }
   };
 
-  // Original implementation as fallback
-  const loadSelectedUserCardsOriginal = async () => {
-    try {
-      console.log(`Loading cards for user ${selectedUser.id} in group ${currentGroup.id} (fallback)...`);
-      const cardsRef = collection(db, 'cards');
-      
-      const ownerQuery = query(
-        cardsRef,
-        where('ownerId', '==', selectedUser.id),
-        where('groupId', '==', currentGroup.id)
-      );
-      
-      const userIdQuery = query(
-        cardsRef,
-        where('userId', '==', selectedUser.id),
-        where('groupId', '==', currentGroup.id)
-      );
-      
-      const [ownerQuerySnapshot, userIdQuerySnapshot] = await Promise.all([
-        getDocs(ownerQuery),
-        getDocs(userIdQuery)
-      ]);
-      
-      console.log(`Found ${ownerQuerySnapshot.docs.length} cards with ownerId and ${userIdQuerySnapshot.docs.length} cards with userId (fallback)`);
-      
-      const cardMap = new Map();
-      
-      ownerQuerySnapshot.docs.forEach(doc => {
-        cardMap.set(doc.id, { id: doc.id, ...doc.data() });
-      });
-      
-      userIdQuerySnapshot.docs.forEach(doc => {
-        if (!cardMap.has(doc.id)) {
-          cardMap.set(doc.id, { id: doc.id, ...doc.data() });
-        }
-      });
-      
-      // Process all cards with batch status verification
-      const statusFixedCards = [];
-      await verifyCardStatusesBatch(cardMap.values(), statusFixedCards);
-      
-      // Filter valid cards (include all cards, not just those not in trade/auction)
-      const validCards = Array.from(cardMap.values()).filter(card => 
-        card.name && card.imageUrl && card.rarity
-      );
-      
-      console.log(`Found ${validCards.length} valid cards to request from selected user (fallback)`);
-      if (statusFixedCards.length > 0) {
-        console.log(`Fixed status for ${statusFixedCards.length} cards (fallback)`);
-      }
-      
-      setSelectedUserCards(validCards);
-      setRequestedCards([]);
-    } catch (error) {
-      console.error('Error loading selected user cards (fallback):', error);
-      Alert.alert('Error', 'Failed to load cards from selected user.');
-    }
-  };
 
   const loadUserBalance = async () => {
     if (!user || !currentGroup) return;
@@ -340,10 +244,13 @@ const CreateTradeScreen = ({ navigation, route }) => {
 
   const sendTrade = async () => {
     if (!canSend) return;
-    
+
     setIsLoading(true);
     try {
-      // Prepare card image maps for UI display
+      const { supabase } = await import('../config/supabase');
+      const currentUserId = user?.id || user?.uid;
+
+      // Prepare card image maps and names for UI display
       const offeredCardImages = {};
       let offeredCardNames = [];
       for (const cardId of selectedCards) {
@@ -364,63 +271,91 @@ const CreateTradeScreen = ({ navigation, route }) => {
         }
       }
 
-      const tradeRef = await addDoc(collection(db, 'trades'), {
-        senderId: user.uid,
-        receiverId: selectedUser.id,
-        offeredCards: selectedCards,
-        requestedCards: requestedCards,
-        offeredCoins: 0, // Always set to 0
-        groupId: currentGroup.id,
-        status: 'active',
-        timestamp: new Date().toISOString(),
-        offeredCardImages,
-        requestedCardImages,
-        // Add participants array for compatibility with existing queries
-        participants: [user.uid, selectedUser.id]
-      });
+      // Get current user's name for denormalized fields
+      const currentUserName = user?.displayName || user?.username || user?.email?.split('@')[0] || 'Unknown';
+      const selectedUserName = selectedUser?.displayName || selectedUser?.username || selectedUser?.email?.split('@')[0] || 'Unknown';
+
+      // Create trade in Supabase
+      const { data: trade, error: tradeError } = await supabase
+        .from('trades')
+        .insert({
+          sender_id: currentUserId,
+          sender_name: currentUserName,
+          sender_avatar: user?.profilePicture || user?.avatar_url || null,
+          receiver_id: selectedUser.id,
+          receiver_name: selectedUserName,
+          receiver_avatar: selectedUser?.profilePicture || selectedUser?.avatar_url || null,
+          participant_ids: [currentUserId, selectedUser.id],
+          offered_cards: selectedCards,
+          requested_cards: requestedCards,
+          group_id: currentGroup.id,
+          status: 'pending'
+        })
+        .select()
+        .single();
+
+      if (tradeError) {
+        console.error('Error creating trade:', tradeError);
+        Alert.alert('Error', 'Failed to create trade. Please try again.');
+        return;
+      }
+
+      console.log('✅ Trade created:', trade.id);
 
       // Update offered cards to mark them as in trade
-      for (const cardId of selectedCards) {
-        const cardRef = doc(db, 'cards', cardId);
-        // Only include fields that are defined
-        const updateData = {
-          inTrade: true,
-          tradeId: tradeRef.id
-        };
-        await updateDoc(cardRef, updateData);
-      }
-      
-      // Also mark requested cards as in trade so they can't be offered elsewhere
-      for (const cardId of requestedCards) {
-        const cardRef = doc(db, 'cards', cardId);
-        // Only include fields that are defined
-        const updateData = {
-          inTrade: true,
-          tradeId: tradeRef.id
-        };
-        await updateDoc(cardRef, updateData);
-      }
-      
-      // Send notification to the recipient of the trade
-      const offeredCardsText = offeredCardNames.length > 1 
+      const offeredCardUpdates = selectedCards.map(cardId =>
+        supabase
+          .from('cards')
+          .update({
+            in_trade: true,
+            trade_id: trade.id
+          })
+          .eq('id', cardId)
+      );
+
+      // Update requested cards to mark them as in trade
+      const requestedCardUpdates = requestedCards.map(cardId =>
+        supabase
+          .from('cards')
+          .update({
+            in_trade: true,
+            trade_id: trade.id
+          })
+          .eq('id', cardId)
+      );
+
+      // Execute all card updates in parallel
+      await Promise.all([...offeredCardUpdates, ...requestedCardUpdates]);
+
+      console.log('✅ Updated card statuses for trade');
+
+      // Send notification to the recipient
+      const offeredCardsText = offeredCardNames.length > 1
         ? `${offeredCardNames.length} cards (${offeredCardNames.slice(0, 2).join(', ')}${offeredCardNames.length > 2 ? '...' : ''})`
         : offeredCardNames[0] || 'a card';
-      
+
       const requestedCardsText = requestedCardNames.length > 1
         ? `${requestedCardNames.length} cards (${requestedCardNames.slice(0, 2).join(', ')}${requestedCardNames.length > 2 ? '...' : ''})`
         : requestedCardNames[0] || 'a card';
-      
-      await sendTradeOfferNotification(
-        selectedUser.id,
-        user.displayName || 'Someone',
-        offeredCardsText,
-        requestedCardsText,
-        tradeRef.id
-      );
 
+      try {
+        await sendTradeOfferNotification(
+          selectedUser.id,
+          user?.displayName || user?.username || 'Someone',
+          offeredCardsText,
+          requestedCardsText,
+          trade.id
+        );
+      } catch (notifError) {
+        console.error('Error sending notification:', notifError);
+        // Don't fail the trade creation if notification fails
+      }
+
+      Alert.alert('Success', 'Trade offer sent!');
       navigation.navigate('TradesOverview');
     } catch (error) {
       console.error('Error creating trade:', error);
+      Alert.alert('Error', 'Failed to create trade. Please try again.');
     } finally {
       setIsLoading(false);
     }
@@ -464,7 +399,7 @@ const CreateTradeScreen = ({ navigation, route }) => {
 
   return (
     <ScreenBackground>
-      <View style={{ flex: 1,  }}>
+      <View style={{ flex: 1 }}>
       <Appbar.Header style={{ backgroundColor: 'rgba(255,255,255,0.2)', elevation: 0, borderBottomWidth: 1, borderBottomColor: 'rgba(0,0,0,0.05)' }}>
         <Appbar.Content title="Create Trade" />
       </Appbar.Header>
@@ -744,4 +679,4 @@ const styles = StyleSheet.create({
   },
 });
 
-export default CreateTradeScreen; 
+export default CreateTradeScreen;

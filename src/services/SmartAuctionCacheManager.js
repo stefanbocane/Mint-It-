@@ -1,6 +1,8 @@
-import { collection, getDocs, orderBy, query, where } from 'firebase/firestore';
+import { collection, orderBy, query, where } from 'firebase/firestore';
+// 🚀 TRACKED: Automatic read monitoring
 import { db } from '../config/firebase';
 import CacheService from './caching/CacheService';
+import { getDocs } from './ReadTracking/TrackedFirestore';
 
 /**
  * SmartAuctionCacheManager - Optimizes auction queries with intelligent caching

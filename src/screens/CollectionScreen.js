@@ -19,13 +19,13 @@
 import { deleteDoc, doc } from 'firebase/firestore';
 import React, { useCallback, useEffect, useMemo } from 'react';
 import {
-    Alert,
-    Animated,
-    Platform,
-    RefreshControl,
-    StyleSheet,
-    Text,
-    View
+  Alert,
+  Animated,
+  Platform,
+  RefreshControl,
+  StyleSheet,
+  Text,
+  View
 } from 'react-native';
 import { ActivityIndicator, Button, Dialog, Portal, useTheme } from 'react-native-paper';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
@@ -37,15 +37,15 @@ import ErrorBoundary from '../components/ErrorBoundary';
 import ScreenBackground from '../components/ScreenBackground';
 import { db } from '../config/firebase';
 import {
-    COLLECTION_CONFIG
+  COLLECTION_CONFIG
 } from '../constants/collectionConstants';
 import { FILTER_CONFIG, PERFORMANCE_LABELS, RARITY_CONFIG } from '../constants/filterConstants';
-import { useAuth } from '../contexts/AuthContext';
-import { useGroup } from '../contexts/GroupContext';
-import { useUnifiedUserData } from '../contexts/UnifiedUserDataContext';
+import { useAuth } from '../contexts/AuthContextSupabase';
+import { useGroup } from '../contexts/GroupContextSupabase';
+import { useUnifiedUserData } from '../contexts/UnifiedUserDataContextSupabase';
 import { useCardAnimations } from '../hooks/useCardAnimations';
 import { useCollectionState } from '../hooks/useCollectionState';
-import { useUltraOptimizedCollectionData } from '../hooks/useUltraOptimizedCollectionData';
+import { useSimpleCollectionData } from '../hooks/useSimpleCollectionData';
 import { useVirtualizedList } from '../hooks/useVirtualizedList';
 import CacheService from '../services/caching/CacheService';
 import { clearExpiredCache } from '../utils/cacheUtils';
@@ -97,46 +97,32 @@ const MemoizedCollectionHeader = React.memo(CollectionHeader);
  * TARGET: <5 Firestore reads per normal session
  */
 const CollectionScreenContent = () => {
-  // ULTRA-OPTIMIZED: Single hook that consolidates ALL data needs
+  // ULTRA-SIMPLE: Single hook that fetches cards in 1 read
   const {
-    // Consolidated data - no separate hooks needed
-    cards,              // Cards with embedded owner details  
-    userProfile,        // User profile with balance, gems, stats
-    groupInfo,          // Current group info
-    
+    // Data
+    cards,              // Cards from cardOverview
+
     // State flags
     loading,
     refreshing,
     error,
-    retryCount,
-    maxRetries,
+
+    // Operations
+    onRefresh,
+
+    // Compatibility fields
+    userProfile,
+    groupInfo,
     hasMoreCards,
-    
-    // Advanced state (second pass)
-    backgroundSyncing,
-    prefetchInProgress,
-    dataFreshness,
-    lastSyncTime,
-    
-    // Optimized operations
-    onRefresh,          // Smart refresh with differential updates
-    loadMoreCards,      // No-op since we load all cards
-    removeCard,         // Optimistic removal
+    loadMoreCards,
+    removeCard,
     handleError,
-    retryOperation,
-    
-    // Advanced operations (second pass)
-    forceBackgroundSync,
-    intelligentPrefetch,
-    
-    // Enhanced performance metrics
-    readCount,          // Track actual Firestore reads
-    cacheHitRate,       // Monitor cache effectiveness
-    averageResponseTime,
-    backgroundSyncs,
-    prefetchOperations,
-    differentialUpdates
-  } = useUltraOptimizedCollectionData();
+    retryOperation
+  } = useSimpleCollectionData();
+
+  // Define missing compatibility values
+  const retryCount = 0;
+  const maxRetries = 3;
 
   // Consolidated state using reducer pattern
   const { state, actions } = useCollectionState();
@@ -147,6 +133,7 @@ const CollectionScreenContent = () => {
   const { addCoins: unifiedAddCoins, subtractCoins: unifiedSubtractCoins } = useUnifiedUserData();
   const theme = useTheme();
   const { startPreviewAnimation, cleanupAnimations } = useCardAnimations();
+
 
   // Memoized platform-specific utilities
   const platformUtils = useMemo(() => ({
@@ -245,23 +232,29 @@ const CollectionScreenContent = () => {
   const sortedAndFilteredCards = useMemo(() => {
     return PerformanceMonitor.measure(PERFORMANCE_LABELS.SORT_AND_FILTER, () => {
       const { sortBy, sortOrder, filterStatus } = state;
-      
+
+      console.log(`🎨 CollectionScreen: Processing ${cards.length} cards for display`);
+      console.log(`🎨 Filter status: ${filterStatus}, Sort by: ${sortBy}, Sort order: ${sortOrder}`);
+
       // Apply filters efficiently using shared predicates
-      let result = filterStatus === FILTER_CONFIG.STATUSES.ALL 
-        ? cards 
+      let result = filterStatus === FILTER_CONFIG.STATUSES.ALL
+        ? cards
         : cards.filter(FILTER_CONFIG.PREDICATES[filterStatus] || (() => true));
-      
+
+      console.log(`🎨 After filtering: ${result.length} cards`);
+
       // Apply sorting with optimized comparisons
       if (result.length <= 1) return result;
-      
+
       result = [...result]; // Shallow copy to avoid mutation
-      
+
       // Use pre-defined comparator functions
       const comparator = sortComparators[sortBy];
       if (comparator) {
         result.sort(sortOrder === FILTER_CONFIG.SORT_ORDERS.ASC ? comparator : (a, b) => -comparator(a, b));
       }
-      
+
+      console.log(`🎨 Final sorted/filtered result: ${result.length} cards`);
       return result;
     });
   }, [cards, state.sortBy, state.sortOrder, state.filterStatus, sortComparators]);
@@ -269,6 +262,8 @@ const CollectionScreenContent = () => {
   // ALL CARDS DISPLAYED - NO SLICING NEEDED
   const displayedCards = useMemo(() => {
     // Display all sorted and filtered cards at once
+    console.log(`🖼️ CollectionScreen: Displaying ${sortedAndFilteredCards.length} cards to FlatList`);
+    console.log(`🖼️ Card IDs being displayed:`, sortedAndFilteredCards.map(c => c.id).join(', ') || 'none');
     return sortedAndFilteredCards;
   }, [sortedAndFilteredCards]);
 
@@ -399,42 +394,26 @@ const CollectionScreenContent = () => {
   // SIMPLE FOOTER - NO LOAD MORE NEEDED
   const ListFooterComponent = useMemo(() => {
     return () => (
-      <View style={{ height: COLLECTION_CONFIG.UI.SPACING.MEDIUM }}>
-        {__DEV__ && (
-          <Text style={styles.debugText}>
-            🎯 All {cards.length} cards loaded in single fetch
-          </Text>
-        )}
-      </View>
+      <View style={{ height: COLLECTION_CONFIG.UI.SPACING.MEDIUM }} />
     );
-  }, [cards.length]);
+  }, []);
 
   // ULTRA-OPTIMIZED empty component with read count display
   const ListEmptyComponent = useMemo(() => (
     <View style={styles.emptyContainer}>
       <Icon name="cards" size={60} color="#ccc" />
       <Text style={styles.emptyText}>
-        {refreshing ? 'Refreshing collection...' : 'No cards found'}
+        {refreshing ? 'Refreshing collection...' : 'Empty collection!'}
       </Text>
       <Text style={styles.emptySubtext}>
-        {refreshing 
-          ? 'Fetching latest data...' 
-          : 'Pull to refresh or adjust your filters'
+        {refreshing
+          ? 'Fetching latest data...'
+          : 'Start collecting cards to build your collection!'
         }
       </Text>
-      {/* READ OPTIMIZATION METRICS - Development only */}
-      {__DEV__ && (
-        <View style={styles.metricsContainer}>
-          <Text style={styles.metricsText}>
-            Firestore Reads: {readCount} | Cache Hit Rate: {(cacheHitRate * 100).toFixed(1)}%
-            Background Syncs: {backgroundSyncs} | Prefetch Ops: {prefetchOperations}
-            Data Freshness: {dataFreshness} | Avg Response: {averageResponseTime.toFixed(0)}ms
-          </Text>
-        </View>
-      )}
       {!refreshing && (
-        <Button 
-          mode="contained" 
+        <Button
+          mode="contained"
           onPress={onRefresh}
           icon="refresh"
           style={{ marginTop: COLLECTION_CONFIG.UI.SPACING.MEDIUM }}
@@ -443,14 +422,14 @@ const CollectionScreenContent = () => {
         </Button>
       )}
       {refreshing && (
-        <ActivityIndicator 
-          size="small" 
+        <ActivityIndicator
+          size="small"
           color={COLLECTION_CONFIG.UI.COLORS.PRIMARY}
           style={{ marginTop: COLLECTION_CONFIG.UI.SPACING.MEDIUM }}
         />
       )}
     </View>
-  ), [onRefresh, refreshing, readCount, cacheHitRate, backgroundSyncs, prefetchOperations, dataFreshness, averageResponseTime]);
+  ), [onRefresh, refreshing]);
 
   // Consolidated effects for better performance
   useEffect(() => {
@@ -503,19 +482,6 @@ const CollectionScreenContent = () => {
         setFilterStatusMenuVisible={menuHandlers.setFilterStatusMenuVisible}
       />
       
-      {/* READ OPTIMIZATION METRICS - Development only */}
-      {__DEV__ && (
-        <View style={styles.debugContainer}>
-          <Text style={styles.debugText}>
-            🔥 Reads: {readCount} | 📊 Cache: {(cacheHitRate * 100).toFixed(1)}% | 📦 Cards: {cards.length}
-            {backgroundSyncing && ' | 🔄 Syncing'}
-            {prefetchInProgress && ' | 🧠 Prefetching'}
-            | 📈 BG Syncs: {backgroundSyncs} | 🚀 Prefetch: {prefetchOperations}
-            | 🎯 Data: {dataFreshness} | ⚡ Avg: {averageResponseTime.toFixed(0)}ms
-          </Text>
-        </View>
-      )}
-      
       {/* Error display */}
       {error && (
         <View style={styles.errorContainer}>
@@ -540,11 +506,6 @@ const CollectionScreenContent = () => {
         <View style={styles.loadingContainer}>
           <ActivityIndicator size="large" color={theme.colors.primary} />
           <Text style={styles.loadingText}>Loading your collection...</Text>
-          {__DEV__ && (
-            <Text style={styles.debugText}>
-              Firestore reads: {readCount}
-            </Text>
-          )}
           {retryCount > 0 && (
             <Text style={styles.retryText}>Attempt {retryCount + 1} of {maxRetries + 1}</Text>
           )}
@@ -810,4 +771,4 @@ const styles = StyleSheet.create({
   },
 });
 
-export default CollectionScreen; 
+export default CollectionScreen;

@@ -1,5 +1,7 @@
-import { collection, doc, getDocs, query, serverTimestamp, updateDoc, where } from 'firebase/firestore';
+import { collection, doc, query, serverTimestamp, updateDoc, where } from 'firebase/firestore';
+// 🚀 TRACKED: Automatic read monitoring
 import { db } from '../config/firebase';
+import { getDocs } from '../services/ReadTracking/TrackedFirestore';
 // Import named exports to avoid default import issues
 import BidderManagementService from '../services/auctions/BidderManagementService';
 import { createBatch } from '../services/BatchService';

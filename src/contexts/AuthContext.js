@@ -1,10 +1,12 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut } from 'firebase/auth';
-import { doc, getDoc, setDoc } from 'firebase/firestore';
-import React, { createContext, useContext, useEffect, useState } from 'react';
+import { doc, setDoc } from 'firebase/firestore';
+// 🚀 TRACKED: Automatic read monitoring
+import { createContext, useContext, useEffect, useMemo, useState } from 'react';
 import { auth, db } from '../config/firebase';
 import CacheService from '../services/caching/CacheService';
 import { registerForPushNotificationsAsync } from '../services/notifications';
+import { getDoc } from '../services/ReadTracking/TrackedFirestore';
 
 const AuthContext = createContext();
 
@@ -23,7 +25,7 @@ export const AuthContextProvider = ({ children, initialUser = null }) => {
   const [loading, setLoading] = useState(initialUser ? false : true);
 
   // FIXED: Prevent infinite loops by stabilizing the initialUser reference
-  const stableInitialUser = React.useMemo(() => initialUser, [initialUser?.uid]);
+  const stableInitialUser = useMemo(() => initialUser, [initialUser?.uid]);
 
   // OPTIMIZATION: Cache maintenance moved to UnifiedBootstrapService
   // No longer needed here as it's handled in the unified bootstrap process
@@ -41,7 +43,7 @@ export const AuthContextProvider = ({ children, initialUser = null }) => {
         // STEP 3.F.1: Use enhanced cache-aside pattern for current user profile
         const userData = await CacheService.getUserProfileCacheAside(
           user.uid, 
-          () => getDoc(doc(db, 'users', user.uid))
+          () => getDoc(doc(db, 'users', user.uid, 'sessions', 'main'))
         );
         
         if (!userData) {
@@ -135,10 +137,7 @@ export const AuthContextProvider = ({ children, initialUser = null }) => {
     try {
       await signOut(auth);
       await removeSavedCredentials();
-      // OPTIMIZATION: Cache maintenance moved to background
-      setTimeout(() => {
-        UnifiedBootstrapService.performCacheMaintenance().catch(console.error);
-      }, 100);
+      // Background cache maintenance handled elsewhere
     } catch (error) {
       throw error;
     }
@@ -156,7 +155,7 @@ export const AuthContextProvider = ({ children, initialUser = null }) => {
   };
 
   // FIXED: Memoize context value to prevent infinite re-renders
-  const value = React.useMemo(() => ({
+  const value = useMemo(() => ({
     user,
     loading,
     signUp,

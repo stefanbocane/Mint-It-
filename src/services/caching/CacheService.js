@@ -20,7 +20,9 @@
  */
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { collection, documentId as firestoreDocumentId, getDoc, getDocs, query, where } from 'firebase/firestore';
+import { collection, documentId as firestoreDocumentId, query, where } from 'firebase/firestore';
+// 🚀 TRACKED: Automatic read monitoring
+import { getDoc, getDocs } from '../ReadTracking/TrackedFirestore';
 
 // Default cache TTL values if constants not available
 const DEFAULT_CACHE_TTL = {

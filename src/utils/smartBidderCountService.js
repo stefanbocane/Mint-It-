@@ -4,9 +4,11 @@
  * Now includes auction status-based TTL for additional 40-60% reduction
  */
 
-import { collection, getDocs, query, where } from 'firebase/firestore';
+import { collection, query, where } from 'firebase/firestore';
+// 🚀 TRACKED: Automatic read monitoring
 import { db } from '../config/firebase';
 import CacheService from '../services/caching/CacheService';
+import { getDocs } from '../services/ReadTracking/TrackedFirestore';
 
 // 🚀 NEW: Tiered TTL based on auction status and urgency
 const BIDDER_COUNT_TTL = {

@@ -7,9 +7,11 @@
  * Target: 80-90% reduction in individual database reads
  */
 
-import { collection, documentId, getDocs, query, where } from 'firebase/firestore';
+import { collection, documentId, query, where } from 'firebase/firestore';
+// 🚀 TRACKED: Automatic read monitoring
 import { db } from '../config/firebase';
 import CacheService from './caching/CacheService';
+import { getDocs } from './ReadTracking/TrackedFirestore';
 
 class UltraBatchService {
   constructor() {

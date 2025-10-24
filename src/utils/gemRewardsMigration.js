@@ -1,5 +1,7 @@
-import { deleteField, doc, getDoc, updateDoc } from 'firebase/firestore';
+import { deleteField, doc, updateDoc } from 'firebase/firestore';
+// 🚀 TRACKED: Automatic read monitoring
 import { db } from '../config/firebase';
+import { getDoc } from '../services/ReadTracking/TrackedFirestore';
 
 /**
  * Migration utility to transition users from old claimedAchievements array 

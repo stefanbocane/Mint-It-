@@ -1,4 +1,5 @@
 import { and, collection, doc, query, where, writeBatch } from 'firebase/firestore';
+// 🚀 TRACKED: Automatic read monitoring (reads handled via other utils)
 import { db } from '../config/firebase';
 import CacheService from '../services/caching/CacheService';
 

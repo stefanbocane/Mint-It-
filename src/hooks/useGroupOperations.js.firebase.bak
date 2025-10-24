@@ -1,0 +1,384 @@
+/**
+ * useGroupOperations Hook
+ * 
+ * Handles all group-related operations including:
+ * - Creating groups
+ * - Joining groups
+ * - Validation
+ * - Error handling
+ * 
+ * Extracted from SocialScreen for better maintainability
+ */
+
+import * as Crypto from 'expo-crypto';
+import { arrayUnion, collection, doc, getDoc, limit, query, where, writeBatch } from 'firebase/firestore';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { Alert } from 'react-native';
+import { db } from '../config/firebase';
+import CacheService from '../services/caching/CacheService';
+import { getDocs } from '../services/ReadTracking/TrackedFirestore';
+
+// UI Constants
+const UI_CONSTANTS = {
+  AUTO_ERROR_CLEAR_TIME: 5000,
+  GROUP_NAME_MIN_LENGTH: 3,
+  GROUP_PASSWORD_MIN_LENGTH: 4,
+};
+
+// Error Handler
+const ErrorHandler = {
+  getErrorMessage(error, context) {
+    if (error.code === 'permission-denied') {
+      return 'Permission denied. Please check your account permissions.';
+    }
+    if (error.code === 'unavailable') {
+      return 'Service temporarily unavailable. Please try again.';
+    }
+    if (error.message?.includes('network')) {
+      return 'Network error. Please check your connection.';
+    }
+    return `Operation failed: ${context}. Please try again.`;
+  }
+};
+
+// Secure password hashing using crypto-safe SHA-256
+const secureHash = async (password) => {
+  try {
+    const hash = await Crypto.digestStringAsync(
+      Crypto.CryptoDigestAlgorithm.SHA256,
+      password,
+      { encoding: Crypto.CryptoEncoding.HEX }
+    );
+    return hash;
+  } catch (error) {
+    console.error('Error hashing password:', error);
+    throw new Error('Failed to hash password');
+  }
+};
+
+/**
+ * Custom hook for group operations
+ * 
+ * @param {Object} user - Current user object
+ * @param {Function} fetchGroups - Function to refresh groups list
+ * @param {Function} notifyGroupCreated - Function to notify about group creation
+ * @param {Function} addGroup - Function to add group to context
+ * @param {Function} switchGroup - Function to switch to a group
+ * @returns {Object} Group operation functions and states
+ */
+export const useGroupOperations = (user, fetchGroups, notifyGroupCreated, addGroup, switchGroup) => {
+  const [createGroupLoading, setCreateGroupLoading] = useState(false);
+  const [joinGroupLoading, setJoinGroupLoading] = useState(false);
+  const [leaveGroupLoading, setLeaveGroupLoading] = useState(false);
+  const [error, setError] = useState(null);
+  
+  // RACE CONDITION FIX: Track component mount state
+  const mountedRef = useRef(true);
+  const errorTimeoutRef = useRef(null);
+
+  // Cleanup on unmount to prevent memory leaks
+  useEffect(() => {
+    return () => {
+      mountedRef.current = false;
+      if (errorTimeoutRef.current) {
+        clearTimeout(errorTimeoutRef.current);
+        errorTimeoutRef.current = null;
+      }
+    };
+  }, []);
+
+  // Validation helper function
+  const validateGroupInput = useCallback((groupName, groupPassword) => {
+    if (!groupName?.trim() || !groupPassword?.trim() || !user) {
+      Alert.alert('Validation Error', 'Please fill in all fields.');
+      return false;
+    }
+
+    if (groupName.length < UI_CONSTANTS.GROUP_NAME_MIN_LENGTH) {
+      Alert.alert('Validation Error', `Group name must be at least ${UI_CONSTANTS.GROUP_NAME_MIN_LENGTH} characters long.`);
+      return false;
+    }
+
+    if (groupPassword.length < UI_CONSTANTS.GROUP_PASSWORD_MIN_LENGTH) {
+      Alert.alert('Validation Error', `Password must be at least ${UI_CONSTANTS.GROUP_PASSWORD_MIN_LENGTH} characters long.`);
+      return false;
+    }
+
+    return true;
+  }, [user]);
+
+  const handleError = useCallback((error, context) => {
+    if (!mountedRef.current) return; // RACE CONDITION FIX
+    
+    console.error(`Group operation error in ${context}:`, error);
+    setError({ context, message: ErrorHandler.getErrorMessage(error, context) });
+    
+    // Auto-clear error with proper cleanup
+    if (errorTimeoutRef.current) {
+      clearTimeout(errorTimeoutRef.current);
+    }
+    
+    errorTimeoutRef.current = setTimeout(() => {
+      if (mountedRef.current) {
+        setError(null);
+        errorTimeoutRef.current = null;
+      }
+    }, UI_CONSTANTS.AUTO_ERROR_CLEAR_TIME);
+  }, []);
+
+  const createGroup = useCallback(async (groupName, groupPassword) => {
+    if (!validateGroupInput(groupName, groupPassword)) return false;
+
+    try {
+      setCreateGroupLoading(true);
+      setError(null);
+      
+      // OPTIMIZATION: Use centralized cache checking
+      const cachedGroups = await CacheService.getValue('all_groups_names');
+      const groupNameLower = groupName.trim().toLowerCase();
+      
+      if (cachedGroups?.includes(groupNameLower)) {
+        Alert.alert('Error', 'A group with this name already exists. Please choose a different name.');
+        return false;
+      }
+      
+      // Fallback database check
+      const existingGroupQuery = query(
+        collection(db, 'groups'),
+        where('name', '==', groupName.trim()),
+        limit(1)
+      );
+      const existingGroupSnapshot = await getDocs(existingGroupQuery);
+      
+      if (!existingGroupSnapshot.empty) {
+        Alert.alert('Error', 'A group with this name already exists. Please choose a different name.');
+        return false;
+      }
+
+      // Create group with batch operations
+      const batch = writeBatch(db);
+      const groupRef = doc(collection(db, 'groups'));
+      const timestamp = new Date().toISOString();
+      
+      batch.set(groupRef, {
+        name: groupName.trim(),
+        password: await secureHash(groupPassword.trim()),
+        ownerId: user.uid,
+        members: [user.uid],
+        memberCount: 1,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      });
+
+      // Update user's groups array - ensure user document exists first
+      const userRef = doc(db, 'users', user.uid);
+      
+      // Check if user document exists, if not create it
+      const userDoc = await getDoc(userRef);
+      if (!userDoc.exists()) {
+        // Create user document if it doesn't exist
+        batch.set(userRef, {
+          uid: user.uid,
+          email: user.email,
+          username: user.email?.split('@')[0] || 'user',
+          groups: [groupRef.id],
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        });
+      } else {
+        // Update existing user document
+        batch.update(userRef, {
+          groups: arrayUnion(groupRef.id),
+          updatedAt: timestamp,
+        });
+      }
+
+      await batch.commit();
+      
+      // OPTIMIZATION: Use centralized cache invalidation
+      await CacheService.invalidate(`groups:${user.uid}`);
+      await CacheService.invalidate(`all_groups_names`);
+      
+      if (mountedRef.current) {
+        // Create the group object
+        const newGroupData = {
+          id: groupRef.id,
+          name: groupName.trim(),
+          ownerId: user.uid,
+          members: [user.uid],
+          memberCount: 1,
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        };
+        
+        // Invalidate caches FIRST
+        await Promise.allSettled([
+          CacheService.invalidate(`user_groups_${user.uid}`),
+          CacheService.invalidate(`users:${user.uid}`)
+        ]);
+        
+        // Add group to context and switch to it (immediate UI update, no waiting)
+        if (addGroup && switchGroup) {
+          console.log('➕ Adding group to context and switching to it...');
+          addGroup(newGroupData);
+          switchGroup(newGroupData);
+          console.log('✅ Group added to context and selected');
+        }
+        
+        // Notify about group creation for auction screen refresh
+        if (notifyGroupCreated) {
+          notifyGroupCreated(newGroupData);
+        }
+        
+        // Optional: Trigger background refresh (don't wait for it)
+        if (fetchGroups) {
+          fetchGroups(true).catch(error => {
+            console.warn('Background refresh failed (non-critical):', error);
+          });
+        }
+        
+        console.log('✅ Group created successfully');
+        Alert.alert('Success', 'Group created successfully!');
+      }
+      
+      return true;
+    } catch (error) {
+      if (mountedRef.current) {
+        handleError(error, 'createGroup');
+      }
+      return false;
+    } finally {
+      if (mountedRef.current) {
+        setCreateGroupLoading(false);
+      }
+    }
+  }, [user, validateGroupInput, fetchGroups, handleError, notifyGroupCreated, addGroup, switchGroup]);
+
+  const joinGroup = useCallback(async (groupName, groupPassword) => {
+    if (!validateGroupInput(groupName, groupPassword)) return false;
+
+    try {
+      setJoinGroupLoading(true);
+      setError(null);
+      
+      // Single optimized query
+      const groupsRef = collection(db, 'groups');
+      const q = query(
+        groupsRef,
+        where('name', '==', groupName.trim()),
+        where('password', '==', await secureHash(groupPassword.trim())),
+        limit(1)
+      );
+      
+      const querySnapshot = await getDocs(q);
+      if (querySnapshot.empty) {
+        Alert.alert('Error', 'Invalid group name or password. Please check your credentials.');
+        return false;
+      }
+
+      const groupDoc = querySnapshot.docs[0];
+      const groupData = groupDoc.data();
+      
+      // Check if user is already a member
+      if (groupData.members?.includes(user.uid)) {
+        Alert.alert('Info', 'You are already a member of this group.');
+        return false;
+      }
+
+      // Batch operations for atomicity
+      const batch = writeBatch(db);
+      const timestamp = new Date().toISOString();
+      
+      // Update group members
+      const groupRef = doc(db, 'groups', groupDoc.id);
+      batch.update(groupRef, {
+        members: arrayUnion(user.uid),
+        memberCount: (groupData.memberCount || groupData.members.length) + 1,
+        updatedAt: timestamp,
+      });
+
+      // Update user's groups array - ensure user document exists first
+      const userRef = doc(db, 'users', user.uid);
+      
+      // Check if user document exists, if not create it
+      const userDoc = await getDoc(userRef);
+      if (!userDoc.exists()) {
+        // Create user document if it doesn't exist
+        batch.set(userRef, {
+          uid: user.uid,
+          email: user.email,
+          username: user.email?.split('@')[0] || 'user',
+          groups: [groupDoc.id],
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        });
+      } else {
+        // Update existing user document
+        batch.update(userRef, {
+          groups: arrayUnion(groupDoc.id),
+          updatedAt: timestamp,
+        });
+      }
+
+      await batch.commit();
+      
+      // OPTIMIZATION: Use centralized cache invalidation
+      await Promise.allSettled([
+        CacheService.invalidate(`groups:${user.uid}`),
+        CacheService.invalidate(`all_groups_names`),
+        CacheService.invalidate(`user_groups_${user.uid}`),
+        CacheService.invalidate(`users:${user.uid}`)
+      ]);
+      
+      if (mountedRef.current) {
+        console.log('🔄 Force refreshing groups list after joining group...');
+        await fetchGroups(true); // Force refresh = true
+        console.log('✅ Groups list refreshed successfully after join');
+        Alert.alert('Success', 'Successfully joined the group!');
+      }
+      
+      return true;
+    } catch (error) {
+      if (mountedRef.current) {
+        handleError(error, 'joinGroup');
+      }
+      return false;
+    } finally {
+      if (mountedRef.current) {
+        setJoinGroupLoading(false);
+      }
+    }
+  }, [user, validateGroupInput, handleError, fetchGroups]);
+
+  const selectGroup = useCallback(async (userId, groupId) => {
+    try {
+      // Fetch the group data
+      const groupRef = doc(db, 'groups', groupId);
+      const groupSnap = await getDoc(groupRef);
+      if (groupSnap.exists()) {
+        const groupData = { id: groupSnap.id, ...groupSnap.data() };
+        switchGroup(groupData);
+      } else {
+        throw new Error('Group not found');
+      }
+    } catch (error) {
+      handleError(error, 'selectGroup');
+    }
+  }, [switchGroup, handleError]);
+
+  return {
+    createGroup,
+    joinGroup,
+    selectGroup,
+    createGroupLoading,
+    joinGroupLoading,
+    leaveGroupLoading,
+    setLeaveGroupLoading,
+    error,
+    clearError: useCallback(() => {
+      if (mountedRef.current) setError(null);
+    }, [])
+  };
+};
+
+export default useGroupOperations;

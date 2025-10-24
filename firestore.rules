@@ -16,61 +16,90 @@ service cloud.firestore {
       allow read, write: if isOwner(userId);
     }
     
-    // Groups
+    // Groups – read if member, write only by admins (adminIds array) or Cloud Functions
     match /groups/{groupId} {
-      allow read, write: if isAuthenticated();
+      allow read: if isAuthenticated() && (request.auth.uid in resource.data.members);
+      allow update, delete: if isAuthenticated() && (request.auth.uid in resource.data.adminIds);
+      allow create: if isAuthenticated();
     }
     
     // Auctions
     match /auctions/{auctionId} {
-      // Allow read if user is authenticated
       allow read: if isAuthenticated();
-      
-      // Allow create if user is authenticated
-      allow create: if isAuthenticated();
-      
-      // Allow update if user is authenticated (simplified for now)
-      allow update: if isAuthenticated();
+      // Seller creates auction doc
+      allow create: if isAuthenticated() && request.resource.data.sellerId == request.auth.uid;
+      // Seller can update while active; backend updates bypass rules via Admin SDK
+      allow update: if isAuthenticated() && resource.data.sellerId == request.auth.uid;
+      allow delete: if false;
     }
     
-    // Simplified auction bids rules
+    // Bids – only authenticated, write by bidder
     match /auctionBids/{bidId} {
-      allow read, write: if isAuthenticated();
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated() && request.resource.data.bidderId == request.auth.uid;
+      allow update, delete: if false;
     }
     
-    // Simplified card rules
+    // Cards
     match /cards/{cardId} {
-      allow read, write: if isAuthenticated();
+      allow read: if isAuthenticated() && (resource.data.ownerId == request.auth.uid);
+      allow update, delete: if isAuthenticated() && (resource.data.ownerId == request.auth.uid);
+      allow create: if isAuthenticated() && request.resource.data.ownerId == request.auth.uid;
     }
     
-    // Add missing collection permissions
+    // ==== Fine-grained collection rules below ==== 
+
+    // Public readonly data – allow reads by any authenticated user, writes only by service/Admin SDK (bypasses rules)
     match /sets/{setId} {
-      allow read, write: if isAuthenticated();
+      allow read: if isAuthenticated();
+      allow write: if false;  // writes performed by trusted backend only
     }
-    
+
+    // Per-user set progress (doc requires userId field)
     match /setProgress/{progressId} {
-      allow read, write: if isAuthenticated();
+      allow read: if isAuthenticated() && resource.data.userId == request.auth.uid;
+      allow create, update, delete: if isAuthenticated() && request.resource.data.userId == request.auth.uid;
     }
-    
+
+    // Per-user set completions (doc id: userId_setId) – requires userId field
     match /setCompletions/{completionId} {
-      allow read, write: if isAuthenticated();
+      allow read: if isAuthenticated() && resource.data.userId == request.auth.uid;
+      allow create, update, delete: if isAuthenticated() && request.resource.data.userId == request.auth.uid;
     }
-    
+
+    // Trades – visible & writable only to listed participants
     match /trades/{tradeId} {
-      allow read, write: if isAuthenticated();
+      allow read: if isAuthenticated() && (request.auth.uid in resource.data.participantIds);
+      allow create: if isAuthenticated() && (request.auth.uid in request.resource.data.participantIds);
+      allow update: if isAuthenticated() && (request.auth.uid in resource.data.participantIds);
+      allow delete: if false;
     }
-    
+
+    // User statistics – keyed by userId
     match /userStats/{userId} {
-      allow read, write: if isAuthenticated();
+      allow read, write: if isOwner(userId);
     }
-    
+
+    // Notifications – each doc must contain userId
     match /notifications/{notificationId} {
-      allow read, write: if isAuthenticated();
+      allow read: if isAuthenticated() && resource.data.userId == request.auth.uid;
+      allow create, update, delete: if isAuthenticated() && request.resource.data.userId == request.auth.uid;
+    }
+
+    // ===== Deny-by-default fallback =====
+    // Any other collection that is not explicitly matched above is blocked.
+    match /{document=**} {
+      allow read, write: if false;
     }
     
-    // Catch-all for any other collections
-    match /{document=**} {
-      allow read, write: if isAuthenticated();
+    match /users/{userId}/sessions/{sessionId} {
+      allow read: if isOwner(userId);
+      allow write: if false;  // writes managed by Cloud Functions only
+    }
+    
+    match /groups/{groupId}/sessions/{userId} {
+      allow read: if request.auth.uid == userId;
+      allow write: if false;
     }
   }
 }

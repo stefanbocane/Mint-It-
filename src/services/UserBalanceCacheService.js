@@ -8,8 +8,10 @@
  * - Providing optimistic balance updates
  */
 
-import { doc, getDoc } from 'firebase/firestore';
+import { doc } from 'firebase/firestore';
+// 🚀 TRACKED: Automatic read monitoring
 import { db } from '../config/firebase';
+import { getDoc } from './ReadTracking/TrackedFirestore';
 
 class UserBalanceCacheService {
   constructor() {

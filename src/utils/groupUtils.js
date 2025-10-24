@@ -1,5 +1,7 @@
-import { collection, deleteDoc, doc, getDoc, getDocs, query, where } from 'firebase/firestore';
+import { collection, deleteDoc, doc, query, where } from 'firebase/firestore';
+// 🚀 TRACKED: Automatic read monitoring
 import { db } from '../config/firebase';
+import { getDoc, getDocs } from '../services/ReadTracking/TrackedFirestore';
 
 /**
  * Deletes groups that have zero members

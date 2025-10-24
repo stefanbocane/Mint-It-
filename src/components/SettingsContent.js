@@ -1,39 +1,53 @@
 import { BlurView } from 'expo-blur';
-import { signOut, updateProfile } from 'firebase/auth';
 import { useEffect, useState } from 'react';
 import { Alert, ScrollView, StyleSheet, View } from 'react-native';
 import { Button, IconButton, Surface, Text, TextInput, useTheme } from 'react-native-paper';
-import { auth } from '../config/firebase';
-import { CACHE_TTL } from '../constants/cacheConfig';
-import { useAuth } from '../contexts/AuthContext';
-import { useGroup } from '../contexts/GroupContext';
-import { batchUpdateWithCache } from '../utils/dbOptimizationUtils';
-import { getCachedDoc } from '../utils/firestoreUtils';
+import { useAuth } from '../contexts/AuthContextSupabase';
+import { useGroup } from '../contexts/GroupContextSupabase';
+import { supabase } from '../config/supabase';
+import CacheService from '../services/caching/CacheService';
 
 const SettingsContent = ({ navigation }) => {
-  const { user } = useAuth();
+  const { user, signOut: contextSignOut } = useAuth();
   const { currentGroup } = useGroup();
   const theme = useTheme();
-  const [displayName, setDisplayName] = useState(user?.displayName || '');
+  const [displayName, setDisplayName] = useState(user?.display_name || user?.displayName || '');
   const [isEditing, setIsEditing] = useState(false);
   const [loading, setLoading] = useState(true);
-  
+
   // Load user preferences when component mounts
   useEffect(() => {
     const loadUserPreferences = async () => {
-      if (!user) return;
-      
+      if (!user?.id) return;
+
       try {
         setLoading(true);
-        // Use cached document with TTL from config
-        const userData = await getCachedDoc('users', user.uid, { 
-          ttl: CACHE_TTL.USER_PREFERENCES,
-          forceRefresh: false // Only fetch from server if cache is expired
-        });
-        
-        if (userData) {
-          // Load any remaining user preferences if needed
-          console.log('User preferences loaded');
+
+        // Try cache first
+        const cacheKey = `user_profile_${user.id}`;
+        const cached = await CacheService.getValue(cacheKey);
+
+        if (cached) {
+          setDisplayName(cached.display_name || cached.username || '');
+          console.log('User preferences loaded from cache');
+          setLoading(false);
+          return;
+        }
+
+        // Fetch from Supabase
+        const { data: userData, error } = await supabase
+          .from('users')
+          .select('display_name, username')
+          .eq('id', user.id)
+          .single();
+
+        if (error) {
+          console.error('Error loading user preferences:', error);
+        } else if (userData) {
+          setDisplayName(userData.display_name || userData.username || '');
+
+          // Cache for 10 minutes
+          await CacheService.setValue(cacheKey, userData, { ttl: 10 * 60 * 1000 });
         }
       } catch (error) {
         console.error('Error loading user preferences:', error);
@@ -41,13 +55,18 @@ const SettingsContent = ({ navigation }) => {
         setLoading(false);
       }
     };
-    
+
     loadUserPreferences();
-  }, [user]);
+  }, [user?.id]);
 
   const handleLogout = async () => {
     try {
-      await signOut(auth);
+      if (contextSignOut) {
+        await contextSignOut();
+      } else {
+        // Fallback to direct Supabase signOut
+        await supabase.auth.signOut();
+      }
     } catch (error) {
       console.error('Error signing out:', error);
       Alert.alert('Error', 'Failed to sign out. Please try again.');
@@ -55,24 +74,39 @@ const SettingsContent = ({ navigation }) => {
   };
 
   const handleSaveProfile = async () => {
-    if (!user) return;
+    if (!user?.id) return;
 
     try {
       const trimmedName = displayName.trim();
-      
-      // Update Firebase Auth profile first
-      await updateProfile(auth.currentUser, { displayName: trimmedName });
-      
-      // Use batch update utility which also updates cache
-      await batchUpdateWithCache([{
-        collection: 'users',
-        id: user.uid,
-        data: {
-          displayName: trimmedName,
+
+      if (!trimmedName) {
+        Alert.alert('Error', 'Display name cannot be empty.');
+        return;
+      }
+
+      console.log(`💾 Saving display name for user ${user.id}: "${trimmedName}"`);
+
+      // Update Supabase users table
+      const { error } = await supabase
+        .from('users')
+        .update({
+          display_name: trimmedName,
           username: trimmedName,
-          updatedAt: new Date().toISOString(),
-        }
-      }]);
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', user.id);
+
+      if (error) {
+        console.error('Error updating profile:', error);
+        Alert.alert('Error', 'Failed to update profile. Please try again.');
+        return;
+      }
+
+      console.log('✅ Display name saved successfully');
+
+      // Invalidate relevant caches
+      await CacheService.invalidate(`user_profile_${user.id}`);
+      await CacheService.invalidate(`unified_user_${user.id}`);
 
       setIsEditing(false);
       Alert.alert('Success', 'Your profile has been updated.');

@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 import { Button, Card, ProgressBar, Text, useTheme } from 'react-native-paper';
-import { useAuth } from '../contexts/AuthContext';
+import { useAuth } from '../contexts/AuthContextSupabase';
 import { claimGemRewards, forceResetGemRewards, getDailyAchievements } from '../utils/gemRewards';
 import { autoMigrateIfNeeded } from '../utils/gemRewardsMigration';
 

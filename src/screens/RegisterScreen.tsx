@@ -3,7 +3,7 @@ import { Alert, Image, Keyboard, StyleSheet, TouchableWithoutFeedback, View } fr
 import { Button, Checkbox, Text, TextInput } from 'react-native-paper';
 import AgeGate from '../components/AgeGate';
 import ScreenBackground from '../components/ScreenBackground';
-import { useAuth } from '../contexts/AuthContext';
+import { useAuth } from '../contexts/AuthContextSupabase';
 import { useTheme } from '../contexts/ThemeContext';
 import { RootStackNavigationProp } from '../navigation/types';
 
@@ -70,11 +70,18 @@ const RegisterScreen: React.FC<RegisterScreenProps> = ({ navigation }) => {
     setError(null);
 
     try {
-      await signUp(email, password);
-      // RootNavigator will handle navigation based on auth state
+      const user = await signUp(email, password);
+
+      // If signup succeeds, the auth state listener will automatically
+      // sign in the user and trigger navigation to the app
+      // The loading state will remain true until auth state updates
+      console.log('✅ Registration successful:', user?.email);
+
+      // Keep loading true - the auth state change will handle navigation
+      // and set loading to false via the AuthContext
     } catch (err) {
+      console.error('Registration error:', err);
       setError(err instanceof Error ? err.message : 'Failed to sign up');
-    } finally {
       setLoading(false);
     }
   };

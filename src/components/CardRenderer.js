@@ -1,11 +1,11 @@
 import React, { useCallback, useMemo } from 'react';
 import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import {
-    COMMON_CARD_STYLES,
-    getCardDimensions,
-    getCardImageStyle,
-    getCardOverlayStyle,
-    getCardStatusBadge
+  COMMON_CARD_STYLES,
+  getCardDimensions,
+  getCardImageStyle,
+  getCardOverlayStyle,
+  getCardStatusBadge
 } from '../utils/cardStyleUtils';
 import SimpleCardImage from './SimpleCardImage';
 
@@ -171,4 +171,4 @@ const CardRenderer = React.memo(({ item, onPress, style }) => {
 
 CardRenderer.displayName = 'CardRenderer';
 
-export default CardRenderer; 
+export default CardRenderer;

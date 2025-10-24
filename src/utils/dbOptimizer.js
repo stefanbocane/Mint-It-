@@ -1,5 +1,7 @@
-import { collection, doc, getDoc, getDocs, limit, orderBy, query, startAfter, where } from 'firebase/firestore';
+import { collection, doc, limit, orderBy, query, startAfter, where } from 'firebase/firestore';
+// 🚀 TRACKED: Automatic read monitoring
 import { db } from '../config/firebase';
+import { getDoc, getDocs } from '../services/ReadTracking/TrackedFirestore';
 import { createDocCacheKey, createQueryCacheKey, getWithCache } from './cacheUtils';
 
 // Constants for cache TTLs

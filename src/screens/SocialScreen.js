@@ -1,19 +1,21 @@
-import * as Crypto from 'expo-crypto';
-import { arrayUnion, collection, doc, getDocs, limit, query, runTransaction, updateDoc, where, writeBatch } from 'firebase/firestore';
+// 🚀 TRACKED: Automatic read monitoring
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, RefreshControl, ScrollView, StyleSheet, View } from 'react-native';
+import { ActivityIndicator, Alert, ScrollView, StyleSheet, View } from 'react-native';
 import { Button, Card, Dialog, IconButton, Modal, Portal, Text, TextInput } from 'react-native-paper';
-import DailyGemsSection from '../components/DailyGemsSection';
 import ScreenBackground from '../components/ScreenBackground';
 import SettingsContent from '../components/SettingsContent';
-import StoreContent from '../components/StoreContent';
-import { db } from '../config/firebase';
-import { useAuth } from '../contexts/AuthContext';
-import { useGroup } from '../contexts/GroupContext';
+import StoreContent from '../components/StoreContentSupabase';
+import { supabase } from '../config/supabase';
+import { useAuth } from '../contexts/AuthContextSupabase';
+import { useGroup } from '../contexts/GroupContextSupabase';
 import { useTheme } from '../contexts/ThemeContext';
 import { useBalance } from '../hooks/useBackwardCompatibility';
+import { useDailyClaims } from '../hooks/useDailyClaims';
+import { useGroupOperations } from '../hooks/useGroupOperations';
 import CacheService from '../services/caching/CacheService';
 import OptimizedSocialFeedService from '../services/OptimizedSocialFeedService';
+import useInitialStore from '../store/useInitialStore';
+import RefreshCoordinator from '../utils/RefreshCoordinator';
 import LeaderboardScreen from './LeaderboardScreen';
 
 // STEP 3.A.1: Import optimized social feed service
@@ -121,259 +123,7 @@ const ErrorHandler = {
   }
 };
 
-// OPTIMIZATION 3: Fixed useGroupOperations with race condition protection
-const useGroupOperations = (user, fetchGroups, notifyGroupCreated) => {
-  const [createGroupLoading, setCreateGroupLoading] = useState(false);
-  const [joinGroupLoading, setJoinGroupLoading] = useState(false);
-  const [leaveGroupLoading, setLeaveGroupLoading] = useState(false);
-  const [error, setError] = useState(null);
-  
-  // RACE CONDITION FIX: Track component mount state
-  const mountedRef = useRef(true);
-  const errorTimeoutRef = useRef(null);
-
-  // Cleanup on unmount to prevent memory leaks
-  useEffect(() => {
-    return () => {
-      mountedRef.current = false;
-      if (errorTimeoutRef.current) {
-        clearTimeout(errorTimeoutRef.current);
-        errorTimeoutRef.current = null;
-      }
-    };
-  }, []);
-
-  // Validation helper function
-  const validateGroupInput = useCallback((groupName, groupPassword) => {
-    if (!groupName?.trim() || !groupPassword?.trim() || !user) {
-      Alert.alert('Validation Error', 'Please fill in all fields.');
-      return false;
-    }
-
-    if (groupName.length < UI_CONSTANTS.GROUP_NAME_MIN_LENGTH) {
-      Alert.alert('Validation Error', `Group name must be at least ${UI_CONSTANTS.GROUP_NAME_MIN_LENGTH} characters long.`);
-      return false;
-    }
-
-    if (groupPassword.length < UI_CONSTANTS.GROUP_PASSWORD_MIN_LENGTH) {
-      Alert.alert('Validation Error', `Password must be at least ${UI_CONSTANTS.GROUP_PASSWORD_MIN_LENGTH} characters long.`);
-      return false;
-    }
-
-    return true;
-  }, [user]);
-
-  const handleError = useCallback((error, context) => {
-    if (!mountedRef.current) return; // RACE CONDITION FIX
-    
-    console.error(`Group operation error in ${context}:`, error);
-    setError({ context, message: ErrorHandler.getErrorMessage(error, context) });
-    
-    // Auto-clear error with proper cleanup
-    if (errorTimeoutRef.current) {
-      clearTimeout(errorTimeoutRef.current);
-    }
-    
-    errorTimeoutRef.current = setTimeout(() => {
-      if (mountedRef.current) {
-        setError(null);
-        errorTimeoutRef.current = null;
-      }
-    }, UI_CONSTANTS.AUTO_ERROR_CLEAR_TIME);
-  }, []);
-
-  const createGroup = useCallback(async (groupName, groupPassword) => {
-    if (!validateGroupInput(groupName, groupPassword)) return false;
-
-    try {
-      setCreateGroupLoading(true);
-      setError(null);
-      
-      // OPTIMIZATION: Use centralized cache checking
-      const cachedGroups = await CacheService.getValue('all_groups_names');
-      const groupNameLower = groupName.trim().toLowerCase();
-      
-      if (cachedGroups?.includes(groupNameLower)) {
-        Alert.alert('Error', 'A group with this name already exists. Please choose a different name.');
-        return false;
-      }
-      
-      // Fallback database check
-      const existingGroupQuery = query(
-        collection(db, 'groups'),
-        where('name', '==', groupName.trim()),
-        limit(1)
-      );
-      const existingGroupSnapshot = await getDocs(existingGroupQuery);
-      
-      if (!existingGroupSnapshot.empty) {
-        Alert.alert('Error', 'A group with this name already exists. Please choose a different name.');
-        return false;
-      }
-
-      // Create group with batch operations
-      const batch = writeBatch(db);
-      const groupRef = doc(collection(db, 'groups'));
-      const timestamp = new Date().toISOString();
-      
-      batch.set(groupRef, {
-        name: groupName.trim(),
-        password: await secureHash(groupPassword.trim()),
-        ownerId: user.uid,
-        members: [user.uid],
-        memberCount: 1,
-        createdAt: timestamp,
-        updatedAt: timestamp,
-      });
-
-      // Update user's groups array
-      const userRef = doc(db, 'users', user.uid);
-      batch.update(userRef, {
-        groups: arrayUnion(groupRef.id),
-        updatedAt: timestamp,
-      });
-
-      await batch.commit();
-      
-      // OPTIMIZATION: Use centralized cache invalidation
-      await CacheService.invalidate(`groups:${user.uid}`);
-      await CacheService.invalidate(`all_groups_names`);
-      
-      if (mountedRef.current) {
-        // Force refresh groups list with cache busting
-        console.log('🔄 Force refreshing groups list after group creation...');
-        await fetchGroups(true); // Force refresh = true
-        
-        // Also invalidate additional cache keys that might be stale
-        await Promise.allSettled([
-          CacheService.invalidate(`user_groups_${user.uid}`),
-          CacheService.invalidate(`users:${user.uid}`)
-        ]);
-        
-        // Notify about group creation for auction screen refresh
-        if (notifyGroupCreated) {
-          const newGroupData = {
-            id: groupRef.id,
-            name: groupName.trim(),
-            ownerId: user.uid,
-            members: [user.uid],
-            memberCount: 1,
-            createdAt: timestamp,
-            updatedAt: timestamp,
-          };
-          notifyGroupCreated(newGroupData);
-        }
-        
-        console.log('✅ Group created and groups list refreshed successfully');
-        Alert.alert('Success', 'Group created successfully!');
-      }
-      
-      return true;
-    } catch (error) {
-      if (mountedRef.current) {
-        handleError(error, 'createGroup');
-      }
-      return false;
-    } finally {
-      if (mountedRef.current) {
-        setCreateGroupLoading(false);
-      }
-    }
-  }, [user, validateGroupInput, fetchGroups, handleError]);
-
-  const joinGroup = useCallback(async (groupName, groupPassword) => {
-    if (!validateGroupInput(groupName, groupPassword)) return false;
-
-    try {
-      setJoinGroupLoading(true);
-      setError(null);
-      
-      // Single optimized query
-      const groupsRef = collection(db, 'groups');
-      const q = query(
-        groupsRef,
-        where('name', '==', groupName.trim()),
-        where('password', '==', await secureHash(groupPassword.trim())),
-        limit(1)
-      );
-      
-      const querySnapshot = await getDocs(q);
-      if (querySnapshot.empty) {
-        Alert.alert('Error', 'Invalid group name or password. Please check your credentials.');
-        return false;
-      }
-
-      const groupDoc = querySnapshot.docs[0];
-      const groupData = groupDoc.data();
-      
-      // Check if user is already a member
-      if (groupData.members?.includes(user.uid)) {
-        Alert.alert('Info', 'You are already a member of this group.');
-        return false;
-      }
-
-      // Batch operations for atomicity
-      const batch = writeBatch(db);
-      const timestamp = new Date().toISOString();
-      
-      // Update group members
-      const groupRef = doc(db, 'groups', groupDoc.id);
-      batch.update(groupRef, {
-        members: arrayUnion(user.uid),
-        memberCount: (groupData.memberCount || groupData.members.length) + 1,
-        updatedAt: timestamp,
-      });
-
-      // Update user's groups array
-      const userRef = doc(db, 'users', user.uid);
-      batch.update(userRef, {
-        groups: arrayUnion(groupDoc.id),
-        updatedAt: timestamp,
-      });
-
-      await batch.commit();
-      
-      // OPTIMIZATION: Use centralized cache invalidation
-      await Promise.allSettled([
-        CacheService.invalidate(`groups:${user.uid}`),
-        CacheService.invalidate(`all_groups_names`),
-        CacheService.invalidate(`user_groups_${user.uid}`),
-        CacheService.invalidate(`users:${user.uid}`)
-      ]);
-      
-      if (mountedRef.current) {
-        console.log('🔄 Force refreshing groups list after joining group...');
-        await fetchGroups(true); // Force refresh = true
-        console.log('✅ Groups list refreshed successfully after join');
-        Alert.alert('Success', 'Successfully joined the group!');
-      }
-      
-      return true;
-    } catch (error) {
-      if (mountedRef.current) {
-        handleError(error, 'joinGroup');
-      }
-      return false;
-    } finally {
-      if (mountedRef.current) {
-        setJoinGroupLoading(false);
-      }
-    }
-  }, [user, validateGroupInput, handleError, fetchGroups]);
-
-  return {
-    createGroup,
-    joinGroup,
-    createGroupLoading,
-    joinGroupLoading,
-    leaveGroupLoading,
-    setLeaveGroupLoading,
-    error,
-    clearError: useCallback(() => {
-      if (mountedRef.current) setError(null);
-    }, [])
-  };
-};
+// OPTIMIZATION 3: useGroupOperations hook now imported from ../hooks/useGroupOperations.js
 
 // Tab configuration for cleaner code
 const TAB_CONFIG = [
@@ -383,98 +133,7 @@ const TAB_CONFIG = [
   { key: 'settings', icon: 'cog', label: 'Settings' }
 ];
 
-// Custom hook for daily claims functionality
-const useDailyClaims = (user, currentGroup, addCoins) => {
-  const [dailyClaimLoading, setDailyClaimLoading] = useState(false);
-  const [lastClaimTimes, setLastClaimTimes] = useState({});
-
-  // Check last claim times with caching
-  const checkLastClaimTimes = useCallback(async () => {
-    if (!user) return;
-    
-    try {
-      const userData = await CacheService.getDocument('users', user.uid, {
-        ttl: 5 * 60 * 1000 // 5 minutes cache
-      });
-      
-      if (userData) {
-        setLastClaimTimes(userData.lastDailyClaim || {});
-      }
-    } catch (error) {
-      console.error('Error checking last claim times:', error);
-    }
-  }, [user]);
-  
-  const canClaimDailyCoins = useCallback((groupId) => {
-    if (!groupId || !lastClaimTimes[groupId]) return true;
-    
-    const lastClaim = new Date(lastClaimTimes[groupId]);
-    const now = new Date();
-    const hoursSinceLastClaim = (now - lastClaim) / (1000 * 60 * 60);
-    
-    return hoursSinceLastClaim >= 24;
-  }, [lastClaimTimes]);
-  
-  const claimDailyCoins = useCallback(async () => {
-    if (!user || !currentGroup) {
-      Alert.alert('Error', 'You need to select a group first');
-      return;
-    }
-    
-    try {
-      setDailyClaimLoading(true);
-      
-      if (!canClaimDailyCoins(currentGroup.id)) {
-        const lastClaim = new Date(lastClaimTimes[currentGroup.id]);
-        const nextClaim = new Date(lastClaim.getTime() + 24 * 60 * 60 * 1000);
-        const timeRemaining = nextClaim - new Date();
-        const hoursRemaining = Math.ceil(timeRemaining / (1000 * 60 * 60));
-        
-        Alert.alert(
-          'Already Claimed',
-          `You've already claimed your daily coins for this group. You can claim again in ${hoursRemaining} hours.`
-        );
-        return;
-      }
-      
-      const success = await addCoins(UI_CONSTANTS.DAILY_CLAIM_COINS);
-      
-      if (success) {
-        const updatedClaimTimes = {
-          ...lastClaimTimes,
-          [currentGroup.id]: new Date().toISOString()
-        };
-        
-        setLastClaimTimes(updatedClaimTimes);
-        
-        const userRef = doc(db, 'users', user.uid);
-        await updateDoc(userRef, {
-          lastDailyClaim: updatedClaimTimes,
-          updatedAt: new Date().toISOString()
-        });
-        
-        await CacheService.invalidate(`users:${user.uid}`);
-        
-        Alert.alert('Success', `You claimed ${UI_CONSTANTS.DAILY_CLAIM_COINS} coins!`);
-      } else {
-        Alert.alert('Error', 'Failed to claim daily coins');
-      }
-    } catch (error) {
-      console.error('Error claiming daily coins:', error);
-      Alert.alert('Error', 'Something went wrong while claiming coins');
-    } finally {
-      setDailyClaimLoading(false);
-    }
-  }, [user, currentGroup, lastClaimTimes, canClaimDailyCoins, addCoins]);
-
-  return {
-    dailyClaimLoading,
-    lastClaimTimes,
-    checkLastClaimTimes,
-    canClaimDailyCoins,
-    claimDailyCoins
-  };
-};
+// OPTIMIZATION 4: useDailyClaims hook now imported from ../hooks/useDailyClaims.js
 
 // OPTIMIZATION 6: Consolidated reusable components to reduce code duplication
 
@@ -985,7 +644,6 @@ const usePerformanceTracking = (user) => {
 const SocialScreen = ({ navigation }) => {
   // Header is now handled by the TabNavigator
   const [activeTab, setActiveTab] = useState('leaderboard');
-  const [groups, setGroups] = useState([]);
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [createGroupModal, setCreateGroupModal] = useState(false);
@@ -996,19 +654,58 @@ const SocialScreen = ({ navigation }) => {
   const [newGroupPassword, setNewGroupPassword] = useState('');
   const [joinGroupName, setJoinGroupName] = useState('');
   const [joinGroupPassword, setJoinGroupPassword] = useState('');
+  const [error, setError] = useState(null);
+
+  // Loading states for group operations (now managed by useGroupOperations hook)
+  const [leaveGroupLoading, setLeaveGroupLoading] = useState(false);
   
   // Refs for better performance
   const mountedRef = useRef(true);
   const lastFetchRef = useRef(0);
   
+  // Get data from contexts - MUST be called before using their values
   const { user, logout } = useAuth();
-  const { currentGroup, setCurrentGroup, removeGroup, notifyGroupCreated } = useGroup();
+  const { groups: contextGroups, currentGroup, setCurrentGroup, removeGroup, addGroup, switchGroup, refreshGroups } = useGroup();
   const { addCoins } = useBalance();
+
+  // Use groups from GroupContext - NOW contextGroups is defined
+  const groups = contextGroups || [];
   const { theme } = useTheme();
-  
+
+  // Group operations hook
+  const {
+    createGroup: createGroupOp,
+    joinGroup: joinGroupOp,
+    createGroupLoading: createGroupOpLoading,
+    joinGroupLoading: joinGroupOpLoading,
+    error: groupOpError
+  } = useGroupOperations(user, fetchGroups, addGroup, switchGroup);
+
+  // Use loading states from hook
+  const createGroupLoading = createGroupOpLoading;
+  const joinGroupLoading = joinGroupOpLoading;
+
+  // Daily claims hook
+  const {
+    canClaimDailyCoins,
+    claimDailyCoins,
+    dailyClaimLoading,
+    checkLastClaimTimes
+  } = useDailyClaims(user, currentGroup, addCoins);
+
+  // Load last claim times when user or current group changes
+  useEffect(() => {
+    if (user && currentGroup) {
+      checkLastClaimTimes();
+    }
+  }, [user, currentGroup, checkLastClaimTimes]);
+
   // OPTIMIZATION 4: Memoize styles for performance - MUST be before any component that uses styles
   const styles = useMemo(() => createStyles(theme), [theme]);
-  
+
+  // Performance monitoring hook
+  const { trackOperation } = usePerformanceTracking(user);
+
   // Cleanup on unmount
   useEffect(() => {
     return () => {
@@ -1019,6 +716,14 @@ const SocialScreen = ({ navigation }) => {
   // 🚀 STEP 3.A.1: ULTRA-OPTIMIZED social feed using OptimizedSocialFeedService
   const fetchGroups = useCallback(async (forceRefresh = false) => {
     if (!user) return;
+    
+    // 1️⃣ Try to hydrate from initial boot payload (0 reads)
+    const initialPayload = useInitialStore?.getState?.()?.payload;
+    if (!forceRefresh && initialPayload?.profile?.groups) {
+      const groupsArr = initialPayload.profile.groups.map(id => ({ id }));
+      // Groups are now managed by GroupContext, no need to set local state
+      return;
+    }
     
     // RACE CONDITION FIX: Check if component is still mounted
     if (!mountedRef.current) return;
@@ -1040,17 +745,15 @@ const SocialScreen = ({ navigation }) => {
         }
       );
       
-      // RACE CONDITION FIX: Only update state if component is still mounted
-      if (mountedRef.current) {
-        setGroups(groupsData.groups || []);
-        
-        console.log(`✅ OPTIMIZED: ${forceRefresh ? 'Force fetched' : 'Loaded'} ${groupsData.groups?.length || 0} groups`);
-        console.log(`📊 Groups Optimization Metrics:`, groupsData.metrics);
-        
-        if (forceRefresh) {
-          console.log('🔍 Optimized refresh complete - groups:', groupsData.groups?.map(g => g.name).join(', '));
-        }
+      console.log(`✅ OPTIMIZED: ${forceRefresh ? 'Force fetched' : 'Loaded'} ${groupsData.groups?.length || 0} groups`);
+      console.log(`📊 Groups Optimization Metrics:`, groupsData.metrics);
+      
+      if (forceRefresh) {
+        console.log('🔍 Optimized refresh complete - groups:', groupsData.groups?.map(g => g.name).join(', '));
       }
+      
+      // NOTE: Don't call refreshGroups() here - it causes infinite loop
+      // GroupContext already loads groups on mount and handles updates
       
       operation.end();
     } catch (error) {
@@ -1075,15 +778,13 @@ const SocialScreen = ({ navigation }) => {
             .filter(Boolean);
         }
         
-        if (mountedRef.current) {
-          setGroups(groups);
-          console.log(`✅ Fallback: Loaded ${groups.length} groups for user ${user.uid}`);
-        }
+        // Groups are now managed by GroupContext, no need to set local state
+        console.log(`✅ Fallback: Loaded ${groups.length} groups for user ${user.uid}`);
       } catch (fallbackError) {
         if (mountedRef.current) {
           console.error('Error in fallback fetchGroups:', fallbackError);
           ErrorHandler.handleGroupOperation(fallbackError, 'fetchGroups');
-          setGroups([]);
+          // Groups are now managed by GroupContext, no need to set local state
         }
       }
       
@@ -1098,711 +799,342 @@ const SocialScreen = ({ navigation }) => {
   // 🚀 ULTRA-OPTIMIZED: Smart refresh with centralized cache management
   const handleRefresh = useCallback(async () => {
     if (!user || !mountedRef.current) return;
-    
+
     setRefreshing(true);
-    
+
     try {
-      console.log('🔄 Starting comprehensive manual refresh for SocialScreen...');
+      console.log('🔄 [SocialScreen] Delegating refresh to RefreshCoordinator');
+      await RefreshCoordinator.refreshAll(user.uid, currentGroup?.id || null);
+      console.log('✅ [SocialScreen] RefreshCoordinator completed');
       
-      // Enhanced cache invalidation for manual refresh
-      console.log('🧹 Manual refresh: clearing comprehensive cache set...');
-      const cacheKeys = [
-        `users:${user.uid}`,
-        `user_groups_${user.uid}`,
-        `user_group_ids_${user.uid}`
-      ];
-      
-      // Also clear group-specific caches
-      if (currentGroup?.id) {
-        cacheKeys.push(`groups:${currentGroup.id}`);
-      }
-      
-      // Clear all group caches for this user's groups
-      if (groups.length > 0) {
-        groups.forEach(group => {
-          cacheKeys.push(`groups:${group.id}`);
-        });
-      }
-      
-      await Promise.allSettled(cacheKeys.map(key => CacheService.invalidate(key)));
-      
-      // Add delay to ensure cache clearing propagates
-      await new Promise(resolve => setTimeout(resolve, 200));
-      
-      // Background refresh for leaderboard if needed
-      if (activeTab === 'leaderboard' && currentGroup?.id) {
-        console.log('🔄 Background refreshing leaderboard data...');
-        CacheService.invalidate(`leaderboard_computed_${currentGroup.id}`)
-          .catch(error => console.error('Error invalidating leaderboard cache:', error));
-      }
-      
-      // OPTIMIZATION: Parallel refresh with race condition protection
-      const refreshPromises = [];
-      
-      if (mountedRef.current) {
-        refreshPromises.push(fetchGroups(true)); // Force refresh
-      }
-      
-      if (mountedRef.current && checkLastClaimTimes) {
-        refreshPromises.push(checkLastClaimTimes());
-      }
-      
-      await Promise.allSettled(refreshPromises);
-      
-      if (mountedRef.current) {
-        console.log('✅ Comprehensive manual refresh completed - groups should now be current');
-      }
+      // Refresh the groups list from GroupContext to show any newly joined groups
+      console.log('🔄 [SocialScreen] Refreshing groups list via GroupContext');
+      await refreshGroups();
+      console.log('✅ [SocialScreen] Groups list refreshed');
     } catch (error) {
       if (mountedRef.current) {
-        console.error('Error refreshing data:', error);
-        Alert.alert('Refresh Error', 'Some data may not be up to date. Please try again.');
+        console.error('Error in RefreshCoordinator:', error);
+        Alert.alert('Refresh Error', 'Data may be slightly outdated. Please try again later.');
       }
     } finally {
       if (mountedRef.current) {
         setRefreshing(false);
       }
     }
-  }, [user, fetchGroups, checkLastClaimTimes, activeTab, currentGroup?.id, groups]);
+  }, [user, currentGroup?.id, refreshGroups]);
 
-  // 🚀 OPTIMIZED: Fix memory leaks and race conditions
-  useEffect(() => {
-    let isMounted = true; // Track component mount state
-    
-    const initializeData = async () => {
-      if (!user || !isMounted) return;
-      
-      try {
-        // Prevent excessive API calls
-        const now = Date.now();
-        if (now - lastFetchRef.current > UI_CONSTANTS.FETCH_THROTTLE_TIME) {
-          lastFetchRef.current = now;
-          
-          // OPTIMIZATION: Parallel initialization with race condition protection
-          const initPromises = [
-            fetchGroups(),
-            checkLastClaimTimes()
-          ];
-          
-          // Only update state if component is still mounted
-          await Promise.all(initPromises);
-          
-          if (isMounted) {
-            console.log('✅ SocialScreen data initialization completed');
-          }
-        }
-      } catch (error) {
-        if (isMounted) {
-          console.error('Error initializing SocialScreen data:', error);
-        }
-      }
-    };
-    
-    initializeData();
-    
-    // Cleanup function to prevent memory leaks
-    return () => {
-      isMounted = false;
-    };
-  }, [user, fetchGroups, checkLastClaimTimes]);
-
-  const { createGroup, joinGroup, createGroupLoading, joinGroupLoading, leaveGroupLoading, setLeaveGroupLoading, error, clearError } = useGroupOperations(user, fetchGroups, notifyGroupCreated);
-
-  // Helper functions for cleaning up user data when leaving a group
-  const deleteUserCardsInGroup = async (userId, groupId) => {
-    try {
-      // OPTIMIZATION: Check cache first to avoid unnecessary DB calls
-      const userCardsKey = `user_cards_${userId}_${groupId}`;
-      const cachedCards = await CacheService.getValue(userCardsKey);
-      
-      if (cachedCards && Array.isArray(cachedCards) && cachedCards.length === 0) {
-        console.log('✅ Cache indicates no cards to delete');
-        return;
-      }
-      
-      // Use both userId and ownerId for comprehensive deletion
-      const cardsQuery = query(
-        collection(db, 'cards'),
-        where('groupId', '==', groupId)
-      );
-      
-      const cardsSnapshot = await getDocs(cardsQuery);
-      const userCards = cardsSnapshot.docs.filter(doc => {
-        const data = doc.data();
-        return data.ownerId === userId || data.userId === userId;
-      });
-      
-      if (userCards.length === 0) {
-        console.log('ℹ️ No cards found to delete');
-        // Update cache to reflect empty state
-        await CacheService.setValue(userCardsKey, [], { ttl: 60000 });
-        return;
-      }
-      
-      // Delete cards in batches (Firestore batch limit is 500 operations)
-      const batch = writeBatch(db);
-      let deleteCount = 0;
-      
-      userCards.forEach(cardDoc => {
-        batch.delete(cardDoc.ref);
-        deleteCount++;
-      });
-      
-      await batch.commit();
-      console.log(`✅ Deleted ${deleteCount} cards for user ${userId} in group ${groupId}`);
-      
-      // Invalidate related caches
-      await Promise.allSettled([
-        CacheService.invalidate(userCardsKey),
-        CacheService.invalidate(`leaderboard_precomputed_${groupId}`),
-        CacheService.invalidate(`user_leaderboard_stats_${userId}_${groupId}`)
-      ]);
-      
-    } catch (error) {
-      console.error('❌ Error deleting user cards:', error);
-      throw error;
-    }
-  };
-
-  const deleteUserAuctionsInGroup = async (userId, groupId) => {
-    try {
-      // OPTIMIZATION: Check cache first to avoid unnecessary DB calls
-      const userAuctionsKey = `user_auctions_${userId}_${groupId}`;
-      const cachedAuctions = await CacheService.getValue(userAuctionsKey);
-      
-      if (cachedAuctions && Array.isArray(cachedAuctions) && cachedAuctions.length === 0) {
-        console.log('✅ Cache indicates no auctions to delete');
-        return;
-      }
-      
-      // Use comprehensive query to catch all auction fields
-      const auctionsQuery = query(
-        collection(db, 'auctions'),
-        where('groupId', '==', groupId)
-      );
-      
-      const auctionsSnapshot = await getDocs(auctionsQuery);
-      const userAuctions = auctionsSnapshot.docs.filter(doc => {
-        const data = doc.data();
-        return data.ownerId === userId || data.sellerId === userId || data.currentBidder === userId;
-      });
-      
-      if (userAuctions.length === 0) {
-        console.log('ℹ️ No auctions found to delete');
-        // Update cache to reflect empty state
-        await CacheService.setValue(userAuctionsKey, [], { ttl: 60000 });
-        return;
-      }
-      
-      const batch = writeBatch(db);
-      let deleteCount = 0;
-      
-      userAuctions.forEach(auctionDoc => {
-        batch.delete(auctionDoc.ref);
-        deleteCount++;
-      });
-      
-      await batch.commit();
-      console.log(`✅ Deleted ${deleteCount} auctions for user ${userId} in group ${groupId}`);
-      
-      // Invalidate related caches
-      await Promise.allSettled([
-        CacheService.invalidate(userAuctionsKey),
-        CacheService.invalidate(`group_auctions_${groupId}`),
-        CacheService.invalidate(`user_active_auctions_${userId}`)
-      ]);
-      
-    } catch (error) {
-      console.error('❌ Error deleting user auctions:', error);
-      throw error;
-    }
-  };
-
-  const deleteUserTradesInGroup = async (userId, groupId) => {
-    try {
-      // OPTIMIZATION: Check cache first to avoid unnecessary DB calls
-      const userTradesKey = `user_trades_${userId}_${groupId}`;
-      const cachedTrades = await CacheService.getValue(userTradesKey);
-      
-      if (cachedTrades && Array.isArray(cachedTrades) && cachedTrades.length === 0) {
-        console.log('✅ Cache indicates no trades to delete');
-        return;
-      }
-      
-      // OPTIMIZATION: Single query instead of two parallel queries
-      const allTradesQuery = query(
-        collection(db, 'trades'),
-        where('groupId', '==', groupId)
-      );
-      
-      const allTradesSnapshot = await getDocs(allTradesQuery);
-      const userTrades = allTradesSnapshot.docs.filter(doc => {
-        const data = doc.data();
-        return data.senderId === userId || data.receiverId === userId;
-      });
-      
-      if (userTrades.length === 0) {
-        console.log('ℹ️ No trades found to delete');
-        // Update cache to reflect empty state
-        await CacheService.setValue(userTradesKey, [], { ttl: 60000 });
-        return;
-      }
-      
-      const batch = writeBatch(db);
-      let deleteCount = 0;
-      
-      userTrades.forEach(tradeDoc => {
-        batch.delete(tradeDoc.ref);
-        deleteCount++;
-      });
-      
-      await batch.commit();
-      console.log(`✅ Deleted ${deleteCount} trades for user ${userId} in group ${groupId}`);
-      
-      // Invalidate related caches
-      await Promise.allSettled([
-        CacheService.invalidate(userTradesKey),
-        CacheService.invalidate(`group_trades_${groupId}`),
-        CacheService.invalidate(`user_active_trades_${userId}`)
-      ]);
-      
-    } catch (error) {
-      console.error('❌ Error deleting user trades:', error);
-      throw error;
-    }
-  };
-
-  // 🚀 ULTRA-OPTIMIZED: Enhanced leaveGroup with proper backend synchronization
-  const leaveGroup = async (groupId) => {
-    if (!user || !groupId || !mountedRef.current) return;
-    
-    // Store original state for rollback if needed
-    let originalGroups = groups;
-    let originalCurrentGroup = currentGroup;
-    
-    try {
-      setLeaveGroupLoading(true);
-      
-      console.log(`🚀 Starting leave group operation for user ${user.uid}, group ${groupId}`);
-      
-      // OPTIMIZATION 1: Optimistic UI update for better UX
-      if (mountedRef.current) {
-        setGroups(prevGroups => {
-          const filteredGroups = prevGroups.filter(group => group.id !== groupId);
-          console.log(`⚡ Optimistically removed group ${groupId} from UI. Groups remaining: ${filteredGroups.length}`);
-          return filteredGroups;
-        });
-        
-        // Clear current group if this was it (optimistic)
-        if (currentGroup?.id === groupId) {
-          setCurrentGroup(null);
-          console.log(`⚡ Optimistically cleared current group`);
-        }
-        
-        removeGroup(groupId);
-        console.log(`⚡ Optimistically removed group ${groupId} from global GroupContext state`);
-      }
-      
-      // ACTUAL BACKEND UPDATE: Remove group from user's groups array
-      console.log('📝 Removing group from user\'s groups array in Firestore...');
-      
-      const userData = await CacheService.getDocument('users', user.uid);
-      if (userData?.groups?.includes(groupId)) {
-        // Update user document to remove group ID
-        const updatedGroups = userData.groups.filter(id => id !== groupId);
-        
-                 // STEP 1: Delete all user's cards, auctions, and trades in this group
-         console.log('🗑️ Deleting all user cards, auctions, and trades in group...');
-         
-         await Promise.allSettled([
-           deleteUserCardsInGroup(user.uid, groupId),
-           deleteUserAuctionsInGroup(user.uid, groupId),
-           deleteUserTradesInGroup(user.uid, groupId)
-         ]);
-         
-         console.log('✅ User data cleanup completed');
-
-         // STEP 2: Update user and group membership atomically
-         await runTransaction(db, async (transaction) => {
-           const userRef = doc(db, 'users', user.uid);
-           const groupRef = doc(db, 'groups', groupId);
-           
-           // IMPORTANT: All reads must happen before any writes in Firestore transactions
-           const groupData = await transaction.get(groupRef);
-           
-           // Now perform all writes
-           // Remove group from user's groups list
-           transaction.update(userRef, {
-             groups: updatedGroups,
-             lastOperation: 'leave_group',
-             lastOperationTimestamp: new Date(),
-           });
-           
-           // Remove user from group's members list
-           if (groupData.exists()) {
-             const groupMembers = groupData.data().members || [];
-             const updatedMembers = groupMembers.filter(memberId => memberId !== user.uid);
-             
-             transaction.update(groupRef, {
-               members: updatedMembers,
-               memberCount: updatedMembers.length,
-               lastUpdated: new Date(),
-             });
-           }
-         });
-        
-        console.log('✅ Successfully updated Firestore - removed group from user and user from group');
-        
-                 // Clear relevant caches to force fresh data next time
-         console.log('🧹 Clearing all relevant caches...');
-         await Promise.allSettled([
-           CacheService.invalidate(`users:${user.uid}`),
-           CacheService.invalidate(`groups:${groupId}`),
-           CacheService.invalidate(`user_groups_${user.uid}`),
-           CacheService.invalidate(`group_members_${groupId}`),
-           // Clear card, auction, and trade related caches
-           CacheService.invalidate(`cards_${groupId}`),
-           CacheService.invalidate(`auctions_${groupId}`),
-           CacheService.invalidate(`trades_${groupId}`),
-           CacheService.invalidate(`user_cards_${user.uid}_${groupId}`),
-           CacheService.invalidate(`user_auctions_${user.uid}_${groupId}`),
-           CacheService.invalidate(`user_trades_${user.uid}_${groupId}`)
-         ]);
-        
-        console.log('✅ Cleared all relevant caches');
-        
-        // ENHANCED: Wait for cache clearing to complete, then force a comprehensive refresh
-        if (mountedRef.current) {
-          console.log('🔄 Starting comprehensive state refresh after leave...');
-          
-          // Add a small delay to ensure cache invalidation has propagated
-          await new Promise(resolve => setTimeout(resolve, 500));
-          
-          try {
-            // Force refresh from server with cache bypass
-            console.log('📡 Fetching fresh groups data from server...');
-            const userData = await CacheService.getDocument('users', user.uid, { 
-              ttl: 0, // Force fresh fetch
-              forceRefresh: true 
-            });
-            
-            let freshGroups = [];
-            if (userData?.groups && userData.groups.length > 0) {
-              const groupsData = await CacheService.getDocuments('groups', userData.groups, {
-                ttl: 0, // Force fresh fetch
-                forceRefresh: true
-              });
-              
-              freshGroups = groupsData
-                .map((group, index) => group ? { id: userData.groups[index], ...group } : null)
-                .filter(Boolean);
-            }
-            
-            // Update local state with fresh data
-            console.log(`🔄 Updating local state with ${freshGroups.length} fresh groups`);
-            setGroups(freshGroups);
-            
-            // Verify the left group is not in the fresh data
-            const leftGroupStillExists = freshGroups.some(group => group.id === groupId);
-            if (leftGroupStillExists) {
-              console.warn(`⚠️ Warning: Left group ${groupId} still appears in fresh data - this shouldn't happen`);
-            } else {
-              console.log(`✅ Confirmed: Left group ${groupId} successfully removed from groups list`);
-            }
-            
-            // Additional fallback - call regular fetchGroups to ensure consistency
-            await fetchGroups(true);
-            console.log('✅ Groups refreshed successfully after leave');
-            
-          } catch (refreshError) {
-            console.error('❌ Error refreshing groups after leave:', refreshError);
-            // Fallback: just call regular fetchGroups
-            try {
-              await fetchGroups(true);
-              console.log('✅ Fallback refresh completed successfully');
-            } catch (fallbackError) {
-              console.error('❌ Fallback refresh also failed:', fallbackError);
-            }
-          }
-          
-          Alert.alert(
-            'Successfully Left Group', 
-            'You have left the group and all your cards, auctions, and trades in this group have been removed.'
-          );
-        }
-      } else {
-        console.log('ℹ️ User was not a member of this group - cleaning up UI only');
-        if (mountedRef.current) {
-          Alert.alert('Info', 'You are no longer a member of this group.');
-        }
-      }
-      
-    } catch (error) {
-      console.error('❌ Error leaving group:', error);
-      
-      if (mountedRef.current) {
-        // ROLLBACK: Restore optimistic updates on error
-        console.log('🔄 Rolling back optimistic updates due to error');
-        try {
-          // Restore original local state immediately
-          setGroups(originalGroups);
-          setCurrentGroup(originalCurrentGroup);
-          
-          // Also try to refresh from server, but don't wait for it
-          fetchGroups(true).catch(fetchError => {
-            console.error('Error refreshing groups during rollback:', fetchError);
-          });
-          
-          console.log('✅ Successfully reverted to original group state');
-        } catch (rollbackError) {
-          console.error('Error during rollback:', rollbackError);
-          // If rollback fails, try to refresh from server as fallback
-          fetchGroups(true).catch(fetchError => {
-            console.error('Fallback refresh also failed:', fetchError);
-          });
-        }
-        
-        Alert.alert(
-          'Error', 
-          error.message || 'Failed to leave group. Please try again.',
-          [{ text: 'OK', onPress: () => console.log('Leave group error acknowledged') }]
-        );
-      }
-    } finally {
-      if (mountedRef.current) {
-        setLeaveGroupLoading(false);
-      }
-    }
-  };
-
-  const handleSignIn = () => {
-    // The AuthGuard will automatically redirect to Login when logout() is called
-    logout();
-  };
-
-  // OPTIMIZATION: Enhanced renderGroups with better error handling and refresh control
-  const renderGroups = () => {
-    // If not logged in, show login prompt
-    if (!user) {
-      return <LoginPrompt onSignIn={handleSignIn} theme={theme} styles={styles} />;
-    }
-
-    const handleLeaveGroupDialog = (groupId) => {
-      setLeaveGroupDialog(true);
-      setGroupToLeave(groupId);
-    };
-    
-    return (
-      <ScrollView 
-        style={styles.container}
-        contentContainerStyle={styles.scrollContent}
-        refreshControl={
-          <RefreshControl
-            refreshing={refreshing}
-            onRefresh={handleRefresh}
-            colors={[theme.colors.primary]}
-            tintColor={theme.colors.primary}
-          />
-        }
-      >
-        <ErrorMessage error={error} onClearError={clearError} theme={theme} styles={styles} />
-
-        <GroupActionButtons 
-          onCreateGroup={() => setCreateGroupModal(true)}
-          onJoinGroup={() => setJoinGroupModal(true)}
-          createGroupLoading={createGroupLoading}
-          joinGroupLoading={joinGroupLoading}
-          theme={theme}
-          styles={styles}
-        />
-
-        <LoadingIndicator loading={loading} theme={theme} styles={styles} />
-
-        {currentGroup && !loading && (
-          <>
-            <CurrentGroupCard currentGroup={currentGroup} theme={theme} styles={styles} />
-
-            <DailyClaimCard 
-              currentGroup={currentGroup}
-              canClaimDailyCoins={canClaimDailyCoins}
-              onClaimCoins={claimDailyCoins}
-              dailyClaimLoading={dailyClaimLoading}
-              theme={theme}
-              styles={styles}
-            />
-            
-            {/* Daily Gems Section */}
-            <DailyGemsSection groupId={currentGroup.id} />
-          </>
-        )}
-
-        {!loading && groups.length === 0 ? (
-          <EmptyGroupsState styles={styles} />
-        ) : (
-          !loading && groups.map(group => (
-            <GroupCard 
-              key={group.id}
-              group={group}
-              user={user}
-              currentGroup={currentGroup}
-              onSelectGroup={(selectedGroup) => setCurrentGroup(selectedGroup)}
-              onLeaveGroup={handleLeaveGroupDialog}
-              leaveGroupLoading={leaveGroupLoading}
-              theme={theme}
-              styles={styles}
-            />
-          ))
-        )}
-        
-        {/* Debug info for development - can be removed in production */}
-        {__DEV__ && !loading && (
-          <Text style={{ fontSize: 10, color: 'gray', textAlign: 'center', marginTop: 10 }}>
-            Debug: {groups.length} groups loaded • Last refresh: {new Date().toLocaleTimeString()}
-          </Text>
-        )}
-      </ScrollView>
-    );
-  };
-
-  // OPTIMIZATION 5: Memoize tab buttons to prevent unnecessary re-renders
-  const tabButtons = useMemo(() => 
-    TAB_CONFIG.map(tab => (
-      <IconButton
-        key={tab.key}
-        icon={tab.icon}
-        size={24}
-        mode={activeTab === tab.key ? 'contained' : 'outlined'}
-        onPress={() => setActiveTab(tab.key)}
-        iconColor={activeTab === tab.key ? 'white' : theme.colors.primary}
-        containerColor={activeTab === tab.key ? theme.colors.primary : 'transparent'}
-        style={styles.iconButton}
-        accessibilityLabel={`Switch to ${tab.label} tab`}
-        accessibilityRole="tab"
-        accessibilityState={{ selected: activeTab === tab.key }}
-      />
-    )), [activeTab, theme.colors.primary, styles.iconButton]
-  );
-
-  const { dailyClaimLoading, lastClaimTimes, checkLastClaimTimes, canClaimDailyCoins, claimDailyCoins } = useDailyClaims(user, currentGroup, addCoins);
-
-  // Performance monitoring
-  const { trackOperation } = usePerformanceTracking(user);
-  
-  // CacheService performance metrics
-  useEffect(() => {
-    const logMetrics = () => {
-      try {
-        const metrics = CacheService.getCacheMetrics();
-        if (metrics && metrics.totalHits > 0) {
-          console.log(`📊 CacheService Performance Metrics:
-            Cache Hit Rate: ${((metrics.totalHits / (metrics.totalHits + metrics.totalMisses)) * 100).toFixed(1)}%
-            Total Hits: ${metrics.totalHits}
-            Total Misses: ${metrics.totalMisses}
-            Memory Cache Size: ${metrics.memoryCacheSize}
-            Storage Cache Size: ${metrics.storageCacheSize}`);
-        }
-      } catch (error) {
-        console.warn('⚠️ Could not retrieve CacheService metrics:', error.message);
-      }
-    };
-    
-    // Log metrics every minute when the screen is active
-    const interval = setInterval(logMetrics, 60000);
-    return () => clearInterval(interval);
+  // Group operation handlers
+  const handleCreateGroup = useCallback(() => {
+    setCreateGroupModal(true);
   }, []);
 
+  const handleJoinGroup = useCallback(() => {
+    setJoinGroupModal(true);
+  }, []);
+
+  const handleCreateGroupSubmit = useCallback(async (name, password) => {
+    if (!user) return false;
+
+    console.log('🔵 handleCreateGroupSubmit called with:', { name, password: '***' });
+    // Loading state is managed by useGroupOperations hook
+    try {
+      // createGroupOp expects (groupName, groupPassword)
+      const success = await createGroupOp(name, password);
+      if (success) {
+        console.log('Group created successfully');
+        await refreshGroups();
+      }
+      return success;
+    } catch (error) {
+      console.error('Error creating group:', error);
+      setError({ context: 'createGroup', message: error.message || 'Failed to create group' });
+      return false;
+    }
+  }, [user, createGroupOp, refreshGroups]);
+
+  const handleJoinGroupSubmit = useCallback(async (name, password) => {
+    if (!user) return false;
+
+    // Loading state is managed by useGroupOperations hook
+    try {
+      // joinGroupOp expects (groupName, groupPassword)
+      const success = await joinGroupOp(name, password);
+      if (success) {
+        console.log('Joined group successfully');
+        await refreshGroups();
+      }
+      return success;
+    } catch (error) {
+      console.error('Error joining group:', error);
+      setError({ context: 'joinGroup', message: error.message || 'Failed to join group' });
+      return false;
+    }
+  }, [user, joinGroupOp, refreshGroups]);
+
+  const handleSelectGroup = useCallback(async (group) => {
+    if (!user) return;
+
+    try {
+      await switchGroup(group);
+      console.log('Group selected successfully');
+    } catch (error) {
+      console.error('Error selecting group:', error);
+      setError({ context: 'selectGroup', message: error.message || 'Failed to select group' });
+    }
+  }, [user, switchGroup]);
+
+  const handleLeaveGroup = useCallback((groupId) => {
+    setGroupToLeave(groupId);
+    setLeaveGroupDialog(true);
+  }, []);
+
+  const handleLeaveGroupConfirm = useCallback(async () => {
+    if (!user || !groupToLeave) return;
+
+    setLeaveGroupLoading(true);
+    try {
+      // Find the group
+      const { data: groups, error: fetchError } = await supabase
+        .from('groups')
+        .select('*')
+        .eq('id', groupToLeave)
+        .limit(1);
+
+      if (fetchError) throw fetchError;
+
+      if (!groups || groups.length === 0) {
+        Alert.alert('Error', 'Group not found.');
+        return;
+      }
+
+      const group = groups[0];
+
+      // Remove user from group members
+      const updatedMembers = (group.members || []).filter(id => id !== user.id);
+      const { error: updateError } = await supabase
+        .from('groups')
+        .update({
+          members: updatedMembers,
+          member_count: updatedMembers.length,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', groupToLeave);
+
+      if (updateError) throw updateError;
+
+      console.log('✅ Left group successfully');
+
+      // Invalidate caches
+      await CacheService.invalidate(`groups:${user.id}`);
+
+      // Remove group from local state
+      removeGroup(groupToLeave);
+
+      // If we left the current group, switch to another group or null
+      if (currentGroup?.id === groupToLeave) {
+        const otherGroups = groups.filter(g => g.id !== groupToLeave);
+        if (otherGroups.length > 0) {
+          await switchGroup(otherGroups[0]);
+        } else {
+          await switchGroup(null);
+        }
+      }
+
+      await refreshGroups();
+      setLeaveGroupDialog(false);
+      setGroupToLeave(null);
+      Alert.alert('Success', 'Successfully left the group!');
+    } catch (error) {
+      console.error('Error leaving group:', error);
+      setError({ context: 'leaveGroup', message: error.message || 'Failed to leave group' });
+    } finally {
+      setLeaveGroupLoading(false);
+    }
+  }, [user, groupToLeave, refreshGroups, removeGroup, currentGroup, switchGroup]);
+
+  // Daily coin claim handler
+  const onClaimCoins = useCallback(async () => {
+    if (!user || !currentGroup) return;
+
+    try {
+      const success = await claimDailyCoins();
+      if (success) {
+        console.log('Daily coins claimed successfully');
+        addCoins(UI_CONSTANTS.DAILY_CLAIM_COINS);
+      }
+    } catch (error) {
+      console.error('Error claiming daily coins:', error);
+      setError({ context: 'claimCoins', message: error.message || 'Failed to claim daily coins' });
+    }
+  }, [user, currentGroup, claimDailyCoins, addCoins]);
+
+  // Main render
   return (
     <SocialScreenErrorBoundary>
       <ScreenBackground>
         <View style={styles.container}>
+          {/* Tab Navigation */}
           <View style={styles.tabContainer}>
-            {tabButtons}
+            {TAB_CONFIG.map((tab) => (
+              <IconButton
+                key={tab.key}
+                icon={tab.icon}
+                mode={activeTab === tab.key ? 'contained' : 'outlined'}
+                onPress={() => setActiveTab(tab.key)}
+                style={styles.iconButton}
+                accessibilityLabel={`Switch to ${tab.label} tab`}
+              />
+            ))}
           </View>
 
-          {/* 🚀 OPTIMIZED: Lazy-loaded tab content for better performance */}
-          {activeTab === 'leaderboard' && currentGroup?.id && (
-            <LeaderboardScreen key={currentGroup.id} groupId={currentGroup.id} />
-          )}
-          {activeTab === 'leaderboard' && !currentGroup?.id && (
-            <View style={styles.container}>
-              <Text style={[styles.noGroupText, { color: theme.colors.onSurface }]}>
-                Please select a group to view the leaderboard
-              </Text>
-            </View>
-          )}
-          {activeTab === 'groups' && renderGroups()}
-          {activeTab === 'store' && <StoreContent navigation={navigation} />}
-          {activeTab === 'settings' && <SettingsContent navigation={navigation} />}
+          {/* Tab Content */}
+          <View style={{ flex: 1 }}>
+            {activeTab === 'leaderboard' && (
+              <LeaderboardScreen navigation={navigation} />
+            )}
 
-          {user && (
-            <Portal>
-              {/* OPTIMIZATION 7: Use consolidated GroupModal component */}
-              <GroupModal
-                visible={createGroupModal}
-                onDismiss={() => setCreateGroupModal(false)}
-                onSubmit={createGroup}
-                title="Create New Group"
-                submitText="Create Group"
-                loading={createGroupLoading}
-                groupName={newGroupName}
-                setGroupName={setNewGroupName}
-                groupPassword={newGroupPassword}
-                setGroupPassword={setNewGroupPassword}
-                styles={styles}
-              />
-
-              <GroupModal
-                visible={joinGroupModal}
-                onDismiss={() => setJoinGroupModal(false)}
-                onSubmit={joinGroup}
-                title="Join Group"
-                submitText="Join Group"
-                loading={joinGroupLoading}
-                groupName={joinGroupName}
-                setGroupName={setJoinGroupName}
-                groupPassword={joinGroupPassword}
-                setGroupPassword={setJoinGroupPassword}
-                styles={styles}
-              />
-
-              <Dialog
-                visible={leaveGroupDialog}
-                onDismiss={() => !leaveGroupLoading && setLeaveGroupDialog(false)}
-                accessibilityViewIsModal
+            {activeTab === 'groups' && (
+              <ScrollView
+                style={{ flex: 1 }}
+                contentContainerStyle={styles.scrollContent}
+                showsVerticalScrollIndicator={true}
+                keyboardShouldPersistTaps="handled"
               >
-                <Dialog.Title>Confirm Leave Group</Dialog.Title>
-                <Dialog.Content>
-                  <Text>Are you sure you want to leave this group? This will permanently delete all your data in this group including cards, auctions, and trades.</Text>
-                </Dialog.Content>
-                <Dialog.Actions>
-                  <Button 
-                    onPress={() => setLeaveGroupDialog(false)}
-                    disabled={leaveGroupLoading}
-                    mode="outlined"
-                    accessibilityLabel="Cancel leaving group"
-                  >
-                    Cancel
-                  </Button>
-                  <Button 
-                    onPress={() => {
-                      setLeaveGroupDialog(false);
-                      leaveGroup(groupToLeave);
-                    }}
-                    disabled={leaveGroupLoading}
-                    loading={leaveGroupLoading}
-                    mode="contained"
-                    buttonColor={theme.colors.error}
-                    accessibilityLabel="Confirm leave group"
-                  >
-                    {leaveGroupLoading ? 'Leaving...' : 'Leave Group'}
-                  </Button>
-                </Dialog.Actions>
-              </Dialog>
-            </Portal>
-          )}
+                {/* Error Display */}
+                <ErrorMessage
+                  error={error}
+                  onClearError={() => setError(null)}
+                  theme={theme}
+                  styles={styles}
+                />
+
+                {/* Loading Indicator */}
+                <LoadingIndicator
+                  loading={loading}
+                  theme={theme}
+                  styles={styles}
+                />
+
+                {/* Current Group Display */}
+                <CurrentGroupCard
+                  currentGroup={currentGroup}
+                  theme={theme}
+                  styles={styles}
+                />
+
+                {/* Daily Coin Claim */}
+                <DailyClaimCard
+                  currentGroup={currentGroup}
+                  canClaimDailyCoins={canClaimDailyCoins}
+                  onClaimCoins={onClaimCoins}
+                  dailyClaimLoading={dailyClaimLoading}
+                  theme={theme}
+                  styles={styles}
+                />
+
+                {/* Group Actions */}
+                <GroupActionButtons
+                  onCreateGroup={handleCreateGroup}
+                  onJoinGroup={handleJoinGroup}
+                  createGroupLoading={createGroupLoading}
+                  joinGroupLoading={joinGroupLoading}
+                  theme={theme}
+                  styles={styles}
+                />
+
+                {/* Groups List */}
+                {groups.length === 0 ? (
+                  <EmptyGroupsState styles={styles} />
+                ) : (
+                  groups.map((group) => (
+                    <GroupCard
+                      key={group.id}
+                      group={group}
+                      user={user}
+                      currentGroup={currentGroup}
+                      onSelectGroup={handleSelectGroup}
+                      onLeaveGroup={handleLeaveGroup}
+                      leaveGroupLoading={leaveGroupLoading}
+                      theme={theme}
+                      styles={styles}
+                    />
+                  ))
+                )}
+              </ScrollView>
+            )}
+
+            {activeTab === 'store' && (
+              <StoreContent navigation={navigation} />
+            )}
+
+            {activeTab === 'settings' && (
+              <SettingsContent navigation={navigation} />
+            )}
+          </View>
+
+          {/* Modals */}
+          <GroupModal
+            visible={createGroupModal}
+            onDismiss={() => {
+              setCreateGroupModal(false);
+              setNewGroupName('');
+              setNewGroupPassword('');
+            }}
+            onSubmit={handleCreateGroupSubmit}
+            title="Create New Group"
+            submitText="Create Group"
+            loading={createGroupLoading}
+            groupName={newGroupName}
+            setGroupName={setNewGroupName}
+            groupPassword={newGroupPassword}
+            setGroupPassword={setNewGroupPassword}
+            styles={styles}
+          />
+
+          <GroupModal
+            visible={joinGroupModal}
+            onDismiss={() => {
+              setJoinGroupModal(false);
+              setJoinGroupName('');
+              setJoinGroupPassword('');
+            }}
+            onSubmit={handleJoinGroupSubmit}
+            title="Join Group"
+            submitText="Join Group"
+            loading={joinGroupLoading}
+            groupName={joinGroupName}
+            setGroupName={setJoinGroupName}
+            groupPassword={joinGroupPassword}
+            setGroupPassword={setJoinGroupPassword}
+            styles={styles}
+          />
+
+          {/* Leave Group Dialog */}
+          <Portal>
+            <Dialog
+              visible={leaveGroupDialog}
+              onDismiss={() => setLeaveGroupDialog(false)}
+            >
+              <Dialog.Title>Leave Group</Dialog.Title>
+              <Dialog.Content>
+                <Text>Are you sure you want to leave this group? This action cannot be undone.</Text>
+              </Dialog.Content>
+              <Dialog.Actions>
+                <Button onPress={() => setLeaveGroupDialog(false)}>Cancel</Button>
+                <Button
+                  onPress={handleLeaveGroupConfirm}
+                  textColor={theme.colors.error}
+                  loading={leaveGroupLoading}
+                >
+                  Leave
+                </Button>
+              </Dialog.Actions>
+            </Dialog>
+          </Portal>
         </View>
       </ScreenBackground>
     </SocialScreenErrorBoundary>
   );
 };
 
-export default SocialScreen; 
+export default SocialScreen;

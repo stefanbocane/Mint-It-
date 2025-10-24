@@ -3,7 +3,7 @@ import { ActivityIndicator, View } from 'react-native';
 import { DefaultTheme } from 'react-native-paper';
 import BackgroundImage from '../components/BackgroundImage';
 import { auth } from '../config/firebase';
-import { useAuth } from '../contexts/AuthContext';
+import { useAuth } from '../contexts/AuthContextSupabase';
 import { StatsProvider } from '../contexts/StatsContext';
 import { useTheme } from '../contexts/ThemeContext';
 import AuthStack from './AuthStack';

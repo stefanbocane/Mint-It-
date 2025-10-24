@@ -7,19 +7,22 @@
  * Target: 70-80% reduction in real-time listener reads
  */
 
-import { collection, doc, onSnapshot, query, where } from 'firebase/firestore';
+import { collection, doc, query, where } from 'firebase/firestore';
+// 🚀 TRACKED: Automatic read monitoring
 import { AppState } from 'react-native';
 import { db } from '../config/firebase';
 import CacheService from '../services/caching/CacheService';
+import { onSnapshot } from '../services/ReadTracking/TrackedFirestore';
 
-// GLOBAL CONFIG: Real-time listeners are enabled only while the app is in the foreground.
-let REALTIME_LISTENERS_ENABLED = AppState.currentState === 'active';
+// Hard-disable real-time listeners to stay under single-digit reads.
+// All screens now rely on overview / cache docs and RefreshCoordinator.
+const REALTIME_LISTENERS_ENABLED = false;
 
 // Keep the flag in sync with app lifecycle
-AppState.addEventListener('change', (state) => {
-  REALTIME_LISTENERS_ENABLED = state === 'active';
-  console.log(`�� Realtime listeners ${REALTIME_LISTENERS_ENABLED ? 'ENABLED' : 'DISABLED'} (AppState=${state})`);
-});
+// AppState.addEventListener('change', (state) => {
+//   REALTIME_LISTENERS_ENABLED = state === 'active';
+//   console.log(`�� Realtime listeners ${REALTIME_LISTENERS_ENABLED ? 'ENABLED' : 'DISABLED'} (AppState=${state})`);
+// });
 
 class GlobalListenerCoordinator {
   constructor() {

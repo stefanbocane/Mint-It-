@@ -1,4 +1,4 @@
-import { collection, doc, runTransaction, Timestamp, writeBatch } from 'firebase/firestore';
+import { collection, doc, Timestamp } from 'firebase/firestore';
 import { getDownloadURL, ref, uploadBytes } from 'firebase/storage';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, BackHandler, Image, ScrollView, StyleSheet, View } from 'react-native';
@@ -6,17 +6,24 @@ import { Button, Text, TextInput } from 'react-native-paper';
 import CameraComponent from '../components/CameraComponent';
 import ScreenBackground from '../components/ScreenBackground';
 import { db, storage } from '../config/firebase';
-import { useAuth } from '../contexts/AuthContext';
-import { useGroup } from '../contexts/GroupContext';
+import { useAuth } from '../contexts/AuthContextSupabase';
+import { useGroup } from '../contexts/GroupContextSupabase';
 import { useTheme } from '../contexts/ThemeContext';
 import { useBalance } from '../hooks/useBackwardCompatibility';
 import CacheService from '../services/caching/CacheService';
 import { sendCardCoinedNotification } from '../services/notifications';
+import { runTransaction } from '../services/ReadTracking/TrackedFirestore';
 import { awardCoinXP } from '../services/XPService';
 import { ensureInitialRewardProtection } from '../utils/balanceUtils';
 import { checkCardCollectionLimit } from '../utils/cardLimits';
 import { ACHIEVEMENT_TYPES, recordAchievement } from '../utils/gemRewards';
 import { createPerformanceTimer } from '../utils/performanceMonitor';
+
+// COMPATIBILITY: Map Supabase user.id to Firebase-style user.uid for legacy code
+const useCompatUser = () => {
+  const { user } = useAuth();
+  return user ? { ...user, uid: user.id } : null;
+};
 
 // Constants
 const CAMERA_CONFIG = {
@@ -34,7 +41,7 @@ const CoinScreen = () => {
   // Core state
   const [image, setImage] = useState(null);
   const [cardName, setCardName] = useState('');
-  const [coinCost, setCoinCost] = useState(5);
+  const [coinCost, setCoinCost] = useState(6); // Default cost to coin a card
   const [isCoining, setIsCoining] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -45,7 +52,7 @@ const CoinScreen = () => {
   const protectionInitializedRef = useRef(false);
   
   // Contexts
-  const { user } = useAuth();
+  const user = useCompatUser(); // Use compatibility wrapper for uid/id
   const { currentGroup } = useGroup();
   const { balance, refreshBalance, subtractCoins } = useBalance();
   const { theme } = useTheme();
@@ -136,15 +143,15 @@ const CoinScreen = () => {
         console.log('📊 Using cached consolidated coin screen data');
       } else {
         // OPTIMIZED: Parallel fetch with better error handling and cache warming
+        // Use GlobalGroupCache for group data to prevent duplicate reads
+        const GlobalGroupCache = require('../services/GlobalGroupCache').default;
+        
         const fetchOperations = await Promise.allSettled([
           CacheService.getDocument('users', user.uid, { 
             ttl: CACHE_CONFIG.USER_BALANCE_TTL,
             retryCount: 1
           }),
-          CacheService.getDocument('groups', currentGroup.id, { 
-            ttl: CACHE_CONFIG.GROUP_DATA_TTL,
-            retryCount: 1 
-          })
+          GlobalGroupCache.getGroup(currentGroup.id)
         ]);
 
         // Process results with better error isolation
@@ -285,7 +292,7 @@ const CoinScreen = () => {
         mintedAt: createdAt, // Use same timestamp for consistency
         startingBid: 5,
         currentBid: 5,
-        status: 'active',
+        status: 'available',
         inAuction: true,
         bids: [],
         rarity: 'common',
@@ -314,49 +321,83 @@ const CoinScreen = () => {
       // Create card and auction with better error handling
       console.log('📝 Creating card and auction...');
       
-      // OPTIMIZED: Use atomic transaction for card+auction creation with reduced writes
+      // CRITICAL OPTIMIZATION: Combine card creation + coin deduction into single transaction
+      // This reduces reads from 6 (2 transactions) to 3 (1 transaction)
+      console.log('💰 Creating card, auction, and deducting coins in single transaction...');
+      
       const transactionResult = await runTransaction(db, async (transaction) => {
-        // Create both documents with IDs first
+        // Create document references
         const cardDocRef = doc(collection(db, 'cards'));
         const auctionDocRef = doc(collection(db, 'auctions'));
+        const userSessionRef = doc(db, 'users', user.uid, 'sessions', 'main');
         
-        // Enhanced card data with auction reference included from start
+        // Read user session to verify balance
+        const userSessionDoc = await transaction.get(userSessionRef);
+        if (!userSessionDoc.exists()) {
+          throw new Error('User session not found');
+        }
+        
+        const userData = userSessionDoc.data();
+        const groupBalances = userData.groupBalances || {};
+        const currentBalance = groupBalances[currentGroup.id] || 0;
+        
+        // Verify sufficient balance
+        if (currentBalance < coinCost) {
+          throw new Error(`Insufficient balance: ${currentBalance} < ${coinCost}`);
+        }
+        
+        // Calculate new balance
+        const newBalance = currentBalance - coinCost;
+        
+        // Enhanced card data with auction reference
         const cardDataWithAuction = {
           ...cardData,
-          auctionId: auctionDocRef.id, // Include auction ID from creation
+          auctionId: auctionDocRef.id,
           status: 'active',
           linkedAt: createdAt
         };
 
-        // Enhanced auction data with card reference included from start  
+        // Enhanced auction data with card reference
         const auctionDataWithCard = {
           ...auctionData,
-          cardId: cardDocRef.id, // Include card ID from creation
+          cardId: cardDocRef.id,
           status: 'active',
           linkedAt: createdAt
         };
 
-        // Set both documents atomically (no separate linking needed)
+        // Perform all operations atomically
         transaction.set(cardDocRef, cardDataWithAuction);
         transaction.set(auctionDocRef, auctionDataWithCard);
+        transaction.update(userSessionRef, {
+          [`groupBalances.${currentGroup.id}`]: newBalance,
+          lastUpdated: Timestamp.now()
+        });
         
-        return { cardId: cardDocRef.id, auctionId: auctionDocRef.id };
+        return { 
+          cardId: cardDocRef.id, 
+          auctionId: auctionDocRef.id,
+          oldBalance: currentBalance,
+          newBalance: newBalance
+        };
       });
 
-      console.log('✅ Card and auction created atomically');
+      console.log(`✅ Card, auction created and ${coinCost} coins deducted atomically`);
+      console.log(`💰 Balance: ${transactionResult.oldBalance} → ${transactionResult.newBalance}`);
+      
+      // Update local balance state immediately
+      // Note: subtractCoins is now handled in transaction, so we just need to trigger UI update
+      await refreshBalance();
 
       // CRITICAL FIX: Invalidate auction list cache so new auction appears on refresh
       try {
-        // Import AuctionService to access cache manager
         const { default: AuctionService } = await import('../services/AuctionService');
         const auctionService = new AuctionService();
         
-        // Clear auction list caches for this group so fresh data is fetched
         const groupId = currentGroup.id;
         const auctionListCacheKeys = [
           `paginated_auctions_optimized_${groupId}_active_start_10`,
           `paginated_auctions_optimized_${groupId}_active_start_20`,
-          `paginated_auctions_optimized_${groupId}_active_start_${15}`, // Default page size
+          `paginated_auctions_optimized_${groupId}_active_start_${15}`,
         ];
         
         auctionListCacheKeys.forEach(key => {
@@ -366,19 +407,6 @@ const CoinScreen = () => {
         console.log(`🧹 Invalidated auction list caches for new coin auction in group ${groupId}`);
       } catch (cacheError) {
         console.warn('⚠️ Could not invalidate auction cache (non-critical):', cacheError);
-      }
-
-      // OPTIMIZED: Process coin transaction with atomic balance check
-      console.log('💰 Processing coin transaction...');
-      const balanceResult = await subtractCoins(coinCost);
-      if (!balanceResult) {
-        // OPTIMIZED: Rollback using batch operation instead of separate updates
-        const rollbackBatch = writeBatch(db);
-        rollbackBatch.update(doc(db, 'cards', transactionResult.cardId), { status: 'failed', failureReason: 'insufficient_balance', failedAt: Timestamp.now() });
-        rollbackBatch.update(doc(db, 'auctions', transactionResult.auctionId), { status: 'cancelled', cancellationReason: 'insufficient_balance', cancelledAt: Timestamp.now() });
-        await rollbackBatch.commit();
-        
-        throw new Error(`Failed to subtract ${coinCost} coins from balance`);
       }
 
       // OPTIMIZED: Background operations with better error handling and intelligent scheduling
@@ -768,4 +796,4 @@ const styles = StyleSheet.create({
   },
 });
 
-export default CoinScreen; 
+export default CoinScreen;

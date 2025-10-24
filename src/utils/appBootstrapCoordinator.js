@@ -1,10 +1,13 @@
 import NetInfo from '@react-native-community/netinfo';
-import { doc, getDoc } from 'firebase/firestore';
+import { doc } from 'firebase/firestore';
+// 🚀 TRACKED: Automatic read monitoring
 import { db } from '../config/firebase';
+import IntelligentBootService from '../services/BootLoader/IntelligentBootService';
+import { getDoc } from '../services/ReadTracking/TrackedFirestore';
 import * as backgroundJobScheduler from './backgroundJobScheduler';
 import * as cacheUtils from './cacheUtils';
 import * as enhancedQueryCache from './enhancedQueryCache';
-import * as smartListenerManager from './smartListenerManager';
+import GlobalListenerCoordinator from './GlobalListenerCoordinator';
 
 /**
  * App Bootstrap Coordinator
@@ -101,6 +104,52 @@ export const bootstrapApplication = async (user, options = {}) => {
       console.log('Bootstrapping in offline mode');
       bootstrapState.offlineMode = true;
     }
+    
+    // 🚀 OPTIMIZED: Try Intelligent Boot Service first (single read)
+    // This loads ALL essential data with 1 read and warms all caches
+    let bootPayload = null;
+    if (isConnected && user?.uid) {
+      // Try to get current group from user doc using GlobalUserProfileCache
+      const GlobalUserProfileCache = require('../services/GlobalUserProfileCache').default;
+      const userData = await GlobalUserProfileCache.getProfile(user.uid);
+      const currentGroupId = userData?.lastActiveGroup || null;
+      
+      if (currentGroupId) {
+        bootPayload = await IntelligentBootService.loadEssentialData(user.uid, currentGroupId);
+        
+        if (bootPayload) {
+          console.log('✅ [Bootstrap] Intelligent Boot Service succeeded (1 read)');
+          console.log(`   All caches warmed, screens ready instantly`);
+          
+          // Mark all data as loaded since boot service handles everything
+          bootstrapState.criticalDataLoaded = true;
+          bootstrapState.essentialDataLoaded = true;
+          bootstrapState.isInitialized = true;
+          bootstrapState.lastBootstrapTime = Date.now();
+          
+          // Start background maintenance tasks
+          Promise.all([
+            backgroundJobScheduler.checkAndScheduleRoutineJobs(),
+            backgroundJobScheduler.processJobs(2)
+          ]).then(() => {
+            bootstrapState.nonEssentialDataLoaded = true;
+            scheduleMaintenanceTasks();
+          }).catch(error => {
+            console.error('Error with background tasks:', error);
+          });
+          
+          return {
+            success: true,
+            state: bootstrapState,
+            duration: Date.now() - startTime,
+            bootMetrics: IntelligentBootService.getMetrics()
+          };
+        }
+      }
+    }
+    
+    // FALLBACK: Traditional boot sequence if Intelligent Boot fails or offline
+    console.log('⚠️ [Bootstrap] Falling back to traditional boot sequence');
     
     // Load Critical User Data (must succeed for app to function)
     await loadCriticalUserData(user, { isOffline: !isConnected });
@@ -212,7 +261,7 @@ const loadCriticalUserData = async (user, options = {}) => {
     const fetchUserData = async () => {
       if (isOffline) return null;
       
-      const userRef = doc(db, 'users', user.uid);
+      const userRef = doc(db, 'users', user.uid, 'sessions', 'main');
       const userSnapshot = await getDoc(userRef);
       
       if (userSnapshot.exists()) {
@@ -528,7 +577,7 @@ const scheduleMaintenanceTasks = () => {
   });
   
   // Clean up listeners that aren't needed
-  smartListenerManager.cleanupAllListeners();
+  GlobalListenerCoordinator.cleanup();
   
   console.log('Maintenance tasks scheduled');
 };
@@ -541,7 +590,7 @@ export const cleanupAppResources = async () => {
     console.log('Cleaning up app resources...');
     
     // Clean up all active listeners
-    smartListenerManager.cleanupAllListeners();
+    GlobalListenerCoordinator.cleanup();
     
     // Cancel any pending background jobs
     // Note: maintaining some stats jobs can still be good even during logout

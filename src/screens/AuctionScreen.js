@@ -15,18 +15,18 @@
 
 import { useTheme } from '@react-navigation/native';
 import React, { memo, useCallback, useEffect, useMemo, useReducer } from 'react';
-import { ActivityIndicator, FlatList, RefreshControl, StyleSheet, Text, View } from 'react-native';
+import { FlatList, RefreshControl, StyleSheet, Text, View } from 'react-native';
 import { FAB } from 'react-native-paper';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import AuctionBidModalRaw from '../components/auction/AuctionBidModal';
 import AuctionListItemRaw from '../components/auction/AuctionListItem';
 import CreateAuctionModal from '../components/auction/CreateAuctionModal';
 import ScreenBackground from '../components/ScreenBackground';
-import { useAuth } from '../contexts/AuthContext';
-import { useGroup } from '../contexts/GroupContext';
+import { useAuth } from '../contexts/AuthContextSupabase';
+import { useGroup } from '../contexts/GroupContextSupabase';
 // OPTIMIZED: Using only the ultra-efficient services
 import { useOptimizedBidding } from '../hooks/useOptimizedBidding';
-import { useUltraEfficientAuctions } from '../services/UltraEfficientAuctionService';
+import { useUltraSimpleAuctionData } from '../hooks/useUltraSimpleAuctionData';
 import { RARITY_TYPES } from '../utils/auctionRarity';
 import { getRarityStyle } from '../utils/rarityUtils';
 
@@ -64,7 +64,6 @@ const uiStateReducer = (state, action) => {
 };
 
 // Error Boundary Implementation
-
 class ErrorBoundary extends React.Component {
   constructor(props) {
     super(props);
@@ -108,15 +107,10 @@ class ErrorBoundary extends React.Component {
 }
 
 // Constants and Utilities
-
-// Note: getRarityStyle is now imported from centralized rarityUtils
-
-// Memoized refresh control colors - prevents recreation on each render
 const REFRESH_COLORS = ['#4FC3A1', '#3498DB', '#9B5DE5'];
 
 // Main Component
-
-const AuctionScreen = React.memo(() => {
+const AuctionScreen = memo(() => {
   // FIXED: Stabilize context hooks to prevent infinite loops
   const authContext = useAuth();
   const groupContext = useGroup();
@@ -124,22 +118,20 @@ const AuctionScreen = React.memo(() => {
   const insets = useSafeAreaInsets();
   
   // FIXED: Memoize context values to prevent re-renders
-  const user = React.useMemo(() => authContext?.user, [authContext?.user?.uid]);
-  const currentGroup = React.useMemo(() => groupContext?.currentGroup, [groupContext?.currentGroup?.id]);
+  const user = useMemo(() => authContext?.user, [authContext?.user?.uid]);
+  const currentGroup = useMemo(() => groupContext?.currentGroup, [groupContext?.currentGroup?.id]);
   
   // FIXED: Stable UI state management
   const [uiState, dispatchUI] = useReducer(uiStateReducer, initialUIState);
   
   // FIXED: Memoize group ID to prevent unnecessary re-initializations
-  const groupId = React.useMemo(() => currentGroup?.id, [currentGroup?.id]);
+  const groupId = useMemo(() => currentGroup?.id, [currentGroup?.id]);
   
   // FIXED: Ultra-efficient auction service with stable group ID
-  const auctionHook = useUltraEfficientAuctions(groupId);
+  const auctionHook = useUltraSimpleAuctionData(groupId);
   
   // FIXED: Advanced bidding hook with memoized dependencies
   const biddingHook = useOptimizedBidding();
-
-  // THIRD PASS: Selective field listener + client-side expiration - reduces reads by 95%
 
   // Component lifecycle management
   useEffect(() => {
@@ -152,18 +144,15 @@ const AuctionScreen = React.memo(() => {
 
     return () => {
       if (__DEV__) {
-        const finalMetrics = auctionHook.metrics;
-        console.log('📊 THIRD PASS AuctionScreen - Reads:', finalMetrics.reads, 'Cache:', finalMetrics.cacheEfficiency?.toFixed(1) + '%', 'Predictive:', finalMetrics.predictiveEfficiency?.toFixed(1) + '%', 'Score:', finalMetrics.readEfficiencyScore);
+        console.log('📊 AuctionScreen - Unmounting');
       }
       
       // Reset state on unmount
       dispatchUI({ type: 'RESET_STATE' });
     };
-  }, [groupId]); // FIXED: Minimal dependencies to prevent loops
+  }, [groupId]);
 
   // Memoized Objects and Styles
-
-  // Memoized rarity styles for performance
   const rarityStyles = useMemo(() => ({
     [RARITY_TYPES.COMMON]: styles.rarityBorderCommon,
     [RARITY_TYPES.UNCOMMON]: styles.rarityBorderUncommon,
@@ -173,16 +162,14 @@ const AuctionScreen = React.memo(() => {
     [RARITY_TYPES.MYTHIC]: styles.rarityBorderMythic,
   }), []);
 
-  // Memoized FAB style to prevent recreation
   const fabStyle = useMemo(() => [
     styles.fab, 
     { 
       backgroundColor: theme.colors.primary,
-      bottom: 56 + insets.bottom + 24 // Tab bar height + safe area + margin
+      bottom: 56 + insets.bottom + 24
     }
   ], [theme.colors.primary, insets.bottom]);
 
-  // THIRD PASS: Intelligent refresh control with predictive validation
   const refreshControl = useMemo(() => (
     <RefreshControl
       refreshing={auctionHook.refreshing}
@@ -195,9 +182,7 @@ const AuctionScreen = React.memo(() => {
     />
   ), [auctionHook.refreshing, auctionHook.refresh, theme.colors.primary, theme.colors.text, theme.colors.surface]);
 
-  // Render Functions
-
-  // 🚀 OPTIMIZATION: Handlers using dispatch for state updates
+  // Handlers
   const openCreateAuction = useCallback(() => {
     dispatchUI({ type: 'SHOW_CREATE_AUCTION' });
   }, []);
@@ -210,9 +195,7 @@ const AuctionScreen = React.memo(() => {
     if (__DEV__) {
       console.log('✅ New auction created:', auctionId);
     }
-    // Refresh auctions to show the new one
     auctionHook.refresh();
-    // Close modal
     dispatchUI({ type: 'HIDE_CREATE_AUCTION' });
   }, [auctionHook.refresh]);
 
@@ -225,9 +208,6 @@ const AuctionScreen = React.memo(() => {
     dispatchUI({ type: 'CLEAR_SCREEN_ERROR' });
   }, []);
 
-  /**
-   * 🚀 OPTIMIZATION: Enhanced auction item renderer with error handling
-   */
   const renderAuction = useCallback(({ item, index }) => {
     if (!item?.id) return null;
     
@@ -250,10 +230,130 @@ const AuctionScreen = React.memo(() => {
           canBid={biddingHook.canBid(item)}
           bidStatus={biddingHook.getBidStatus(item)}
           suggestedBid={biddingHook.getSuggestedBid(item)}
-          onAuctionEnded={(auction) => {
-            // THIRD PASS: Client-side expiration detection - zero server reads
+          onAuctionEnded={async (auction) => {
+            // CRITICAL DEBUG: Log that we're even called
+            console.log('🚨 [DEBUG] ============================================');
+            console.log('🚨 [DEBUG] onAuctionEnded CALLED!');
+            console.log('🚨 [DEBUG] Auction ID:', auction?.id);
+            console.log('🚨 [DEBUG] Has cardId?', !!auction?.cardId, 'Value:', auction?.cardId);
+            console.log('🚨 [DEBUG] Has currentRarity?', !!auction?.currentRarity, 'Value:', auction?.currentRarity);
+            console.log('🚨 [DEBUG] Has cardRarity?', !!auction?.cardRarity, 'Value:', auction?.cardRarity);
+            console.log('🚨 [DEBUG] Has currentGroup?', !!currentGroup?.id, 'Value:', currentGroup?.id);
+            console.log('🚨 [DEBUG] Auction object keys:', Object.keys(auction || {}));
+            console.log('🚨 [DEBUG] ============================================');
+            
             const isExpired = auctionHook.checkAuctionExpiration(auction);
-            console.log(`⏰ THIRD PASS: Auction ${auction.id} ${isExpired ? 'client-expired' : 'server-expired'} - zero reads`);
+            console.log(`⏰ Auction ${auction.id} ${isExpired ? 'client-expired' : 'server-expired'}`);
+
+            try {
+              // Mark card as available in Firestore so collection reflects update
+              const { doc, updateDoc } = await import('firebase/firestore');
+              const { db } = await import('../config/firebase');
+              const { updateCardInOverview } = await import('../utils/cardOverviewHelper');
+
+              if (auction?.cardId) {
+                // CRITICAL FIX: Update card rarity with final auction rarity
+                const finalRarity = auction.currentRarity || auction.cardRarity || 'common';
+                console.log(`🎨 [AuctionEnd] Updating card ${auction.cardId} with final rarity: ${finalRarity} (from auction: ${auction.id})`);
+                console.log(`🎨 [AuctionEnd] Auction data:`, {
+                  currentRarity: auction.currentRarity,
+                  cardRarity: auction.cardRarity,
+                  currentBid: auction.currentBid,
+                  uniqueBidderCount: auction.uniqueBidderCount
+                });
+                
+                // Step 1: Update the card document
+                await updateDoc(doc(db, 'cards', auction.cardId), {
+                  inAuction: false,
+                  auctionId: null,
+                  status: 'available',
+                  statusUpdateTime: new Date(),
+                  rarity: finalRarity, // ✅ FIXED: Update card rarity!
+                  lastRarityUpdate: new Date(),
+                  lastAuctionId: auction.id
+                });
+                
+                console.log(`✅ [AuctionEnd] Card ${auction.cardId} document updated with rarity: ${finalRarity}`);
+                
+                // Step 2: Manually update cardOverviews (since Cloud Functions not deployed)
+                // Determine the card owner (could be seller or winner)
+                const cardOwnerId = auction.currentBidder || auction.winnerId || auction.sellerId;
+                
+                if (cardOwnerId && currentGroup?.id) {
+                  console.log(`📝 [AuctionEnd] Manually updating cardOverview for user ${cardOwnerId}`);
+                  
+                  const overviewResult = await updateCardInOverview(
+                    currentGroup.id,
+                    cardOwnerId,
+                    auction.cardId,
+                    {
+                      rarity: finalRarity,
+                      status: 'available',
+                      inAuction: false,
+                      inTrade: false
+                    }
+                  );
+                  
+                  if (overviewResult.success) {
+                    console.log(`✅ [AuctionEnd] CardOverview updated successfully for ${cardOwnerId}`);
+                  } else {
+                    console.warn(`⚠️ [AuctionEnd] Failed to update cardOverview:`, overviewResult.error);
+                  }
+                } else {
+                  console.warn(`⚠️ [AuctionEnd] Could not determine card owner, skipping cardOverview update`);
+                }
+              }
+
+              // Step 3: Mark auction as completed
+              await updateDoc(doc(db, 'auctions', auction.id), {
+                status: 'completed',
+                completedAt: new Date(),
+              });
+              
+              console.log(`✅ [AuctionEnd] Auction ${auction.id} marked as completed`);
+
+              // Step 4: Clear caches and trigger refresh
+              setTimeout(async () => {
+                try {
+                  const RefreshCoordinator = (await import('../utils/RefreshCoordinator')).default;
+                  
+                  // Invalidate all relevant caches
+                  if (user?.uid && currentGroup?.id) {
+                    console.log(`🔄 [AuctionEnd] Triggering global cache refresh...`);
+                    await RefreshCoordinator.refreshAll(user.uid, currentGroup.id);
+                    console.log(`✅ [AuctionEnd] Global refresh completed - collection should now show updated rarity`);
+                  }
+                } catch (refreshError) {
+                  console.warn('⚠️ [AuctionEnd] Failed to trigger global refresh (non-critical):', refreshError);
+                }
+              }, 500); // Short delay to ensure Firestore writes complete
+
+              // Step 5: Refresh auction list
+              auctionHook.refresh();
+              console.log(`🔄 [AuctionEnd] Auction list refreshed`);
+              
+            } catch (error) {
+              console.error('❌ [AuctionEnd] Error updating card/auction status after end:', error);
+              console.error('❌ [AuctionEnd] Error details:', {
+                message: error.message,
+                stack: error.stack,
+                auctionId: auction?.id,
+                cardId: auction?.cardId,
+                hasCurrentGroup: !!currentGroup?.id
+              });
+              
+              // Show error to user
+              try {
+                const { Alert } = await import('react-native');
+                Alert.alert(
+                  'Auction Completion Error',
+                  `Failed to complete auction: ${error.message}. The card may not update immediately. Please refresh your collection.`,
+                  [{ text: 'OK' }]
+                );
+              } catch (alertError) {
+                console.error('Failed to show alert:', alertError);
+              }
+            }
           }}
           index={index}
           testID={`auction-item-${item.id}`}
@@ -266,9 +366,6 @@ const AuctionScreen = React.memo(() => {
     }
   }, [user, auctionHook.loading, biddingHook, rarityStyles, handleScreenError]);
 
-  /**
-   * Optimized bid modal renderer
-   */
   const renderBidModal = useCallback(() => {
     if (!biddingHook.modal.selectedAuction) return null;
     
@@ -289,17 +386,6 @@ const AuctionScreen = React.memo(() => {
     );
   }, [biddingHook, user]);
 
-  /**
-   * THIRD PASS: Simplified loading footer
-   */
-  const renderLoadingFooter = useCallback(() => {
-    // No pagination in ultra-simple version
-    return null;
-  }, []);
-
-  /**
-   * OPTIMIZED: Enhanced empty state with better UX
-   */
   const renderEmptyState = useCallback(() => {
     return (
       <View style={styles.emptyContainer} testID="empty-state">
@@ -307,116 +393,37 @@ const AuctionScreen = React.memo(() => {
           {auctionHook.loading ? 'Loading auctions...' : 'No active auctions'}
         </Text>
         {!auctionHook.loading && (
-          <>
-            <Text style={[styles.emptySubText, { color: theme.colors.text }]}>
-              Be the first to create an auction!
-            </Text>
-            <Text 
-              style={[styles.retryText, { color: theme.colors.primary }]}
-              onPress={auctionHook.refresh}
-            >
-              Tap to refresh
-            </Text>
-          </>
+          <Text style={[styles.emptySubText, { color: theme.colors.text }]}>
+            Be the first to create an auction!
+          </Text>
         )}
       </View>
     );
-  }, [auctionHook.loading, auctionHook.refresh, theme.colors.text, theme.colors.primary]);
+  }, [auctionHook.loading, theme.colors.text]);
 
-  /**
-   * OPTIMIZED: Enhanced item layout with better height estimation
-   */
-  const getItemLayout = useCallback((data, index) => {
-    // Dynamic height based on auction status and content
-    const baseHeight = 120;
-    const item = data?.[index];
-    
-    // Add extra space for auctions with longer descriptions or more bids
-    let adjustedHeight = baseHeight;
-    if (item?.description?.length > 100) adjustedHeight += 20;
-    if (item?.bidCount > 5) adjustedHeight += 15;
-    
-    return {
-      length: adjustedHeight,
-      offset: adjustedHeight * index,
-      index,
-    };
-  }, []);
-
-  /**
-   * Optimized key extractor with stable reference
-   */
-  const keyExtractor = useCallback((item, index) => {
-    return item?.id || `auction-${index}`;
-  }, []);
-
-  // OPTIMIZED: Enhanced FlatList configuration for maximum performance
   const flatListProps = useMemo(() => ({
     removeClippedSubviews: true,
-    maxToRenderPerBatch: 6, // Further reduced for better performance
-    windowSize: 10, // Further reduced for memory efficiency
-    initialNumToRender: 4, // Minimal initial render for faster startup
-    updateCellsBatchingPeriod: 150, // Increased batching for smoother updates
-    scrollEventThrottle: 50, // Further reduced scroll events
-    maintainVisibleContentPosition: {
-      minIndexForVisible: 0,
-      autoscrollToTopThreshold: 100,
-    },
-    keyboardShouldPersistTaps: 'handled',
-    showsVerticalScrollIndicator: true,
-    bounces: true,
-    alwaysBounceVertical: false,
-    legacyImplementation: false,
-    disableVirtualization: false,
-    // NEW: Enhanced performance props
-    getItemLayout: getItemLayout, // Add the optimized layout function
-    keyExtractor: keyExtractor, // Add stable key extraction
-    // Optimize rendering performance
-    renderToHardwareTextureAndroid: true,
-    scrollIndicatorInsets: { right: 1 }, // Prevent layout shifts
-    // Memory management
-    recycleToFallback: true,
-    testID: "auction-list"
-  }), [getItemLayout, keyExtractor]);
+    maxToRenderPerBatch: 6,
+    updateCellsBatchingPeriod: 100,
+    windowSize: 10,
+    initialNumToRender: 8,
+    getItemLayout: null, // Let FlatList calculate
+  }), []);
 
-  // Main Render Logic
-
-  // THIRD PASS: Read limits removed as requested
-
-  // Handle loading state with better UX
-  if (auctionHook.loading) {
+  // Handle errors
+  if (uiState.screenError) {
     return (
       <ErrorBoundary>
         <ScreenBackground>
-          <View style={styles.loadingContainer} testID="loading-state">
-            <ActivityIndicator size="large" color={theme.colors.primary} />
-            <Text style={[styles.loadingText, { color: theme.colors.text }]}>
-              Loading auctions...
-            </Text>
-          </View>
-        </ScreenBackground>
-      </ErrorBoundary>
-    );
-  }
-
-  // Handle error state with no data
-  if ((auctionHook.error || uiState.screenError) && auctionHook.auctions.length === 0) {
-    const errorMessage = uiState.screenError || auctionHook.error;
-    return (
-      <ErrorBoundary>
-        <ScreenBackground>
-          <View style={styles.errorContainer} testID="error-state">
+          <View style={styles.errorContainer}>
             <Text style={[styles.errorText, { color: theme.colors.error }]}>
-              {errorMessage}
+              {uiState.screenError}
             </Text>
             <Text 
-              style={[styles.retryText, { color: theme.colors.primary }]}
-              onPress={() => {
-                clearScreenError();
-                auctionHook.refresh();
-              }}
+              style={[styles.clearErrorText, { color: theme.colors.primary }]}
+              onPress={clearScreenError}
             >
-              Tap to retry
+              Tap to dismiss
             </Text>
           </View>
         </ScreenBackground>
@@ -424,95 +431,66 @@ const AuctionScreen = React.memo(() => {
     );
   }
 
-  // Main render with optimizations
   return (
     <ErrorBoundary>
       <ScreenBackground>
-        <View style={styles.container} testID="auction-screen">
+        <View style={styles.container}>
           <FlatList
             data={auctionHook.auctions}
             renderItem={renderAuction}
-            refreshControl={refreshControl}
-                ListFooterComponent={renderLoadingFooter}
+            keyExtractor={(item) => item?.id || `auction-${Math.random()}`}
             ListEmptyComponent={renderEmptyState}
+            refreshControl={refreshControl}
+            contentContainerStyle={styles.listContainer}
+            showsVerticalScrollIndicator={false}
+            testID="auction-list"
             {...flatListProps}
           />
-          
-          {/* Floating Action Button for creating auctions */}
+
           <FAB
             icon="plus"
             style={fabStyle}
-            contentStyle={styles.fabContent}
-            labelStyle={styles.fabLabel}
             onPress={openCreateAuction}
-            label="List Auction"
-            size="medium"
             testID="create-auction-fab"
           />
-          
-          {renderBidModal()}
-          
-          {/* Create Auction Modal */}
+
           <CreateAuctionModal
             visible={uiState.createAuctionVisible}
             onDismiss={closeCreateAuction}
             onSuccess={handleAuctionCreated}
+            testID="create-auction-modal"
           />
-          
-          {/* FIXED: Simplified development metrics display */}
-          {__DEV__ && (
-            <View style={styles.devMetrics}>
-              <Text style={[styles.devMetricsText, { color: theme.colors.text }]}>
-                📊 Reads: {auctionHook.metrics?.reads || 0} | Cache: {(auctionHook.metrics?.cacheEfficiency || 0).toFixed(0)}%
-              </Text>
-            </View>
-          )}
+
+          {renderBidModal()}
         </View>
       </ScreenBackground>
     </ErrorBoundary>
   );
 });
 
-// Consolidated Styles
-
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    padding: 16,
   },
-  loadingContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: 20,
-  },
-  loadingText: {
-    marginTop: 16,
-    fontSize: 16,
-    textAlign: 'center',
-  },
-  loadingMoreContainer: {
-    alignItems: 'center',
-    paddingVertical: 20,
-  },
-  loadingMoreText: {
-    fontSize: 14,
-    marginTop: 8,
+  listContainer: {
+    paddingHorizontal: 16,
+    paddingTop: 16,
+    paddingBottom: 100,
   },
   emptyContainer: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    marginTop: 50,
-    padding: 20,
+    paddingVertical: 50,
   },
   emptyText: {
-    fontSize: 16,
+    fontSize: 18,
+    fontWeight: '600',
     textAlign: 'center',
     marginBottom: 8,
   },
   emptySubText: {
-    fontSize: 14,
+    fontSize: 16,
     textAlign: 'center',
     opacity: 0.7,
   },
@@ -524,82 +502,46 @@ const styles = StyleSheet.create({
   },
   errorText: {
     fontSize: 16,
-    fontWeight: 'bold',
-    marginBottom: 10,
     textAlign: 'center',
+    marginBottom: 16,
   },
-  errorSubText: {
-    fontSize: 14,
-    textAlign: 'center',
-    marginTop: 8,
-  },
-  retryText: {
-    fontSize: 14,
-    marginTop: 16,
+  clearErrorText: {
+    fontSize: 16,
     textDecorationLine: 'underline',
-  },
-  debugInfo: {
-    position: 'absolute',
-    bottom: 10,
-    left: 10,
-    right: 10,
-    padding: 8,
-    backgroundColor: 'rgba(0,0,0,0.1)',
-    borderRadius: 4,
   },
   debugText: {
     fontSize: 12,
-    textAlign: 'center',
-  },
-  debugTextSmall: {
-    fontSize: 10,
-    textAlign: 'center',
+    marginTop: 10,
+    opacity: 0.7,
   },
   fab: {
     position: 'absolute',
-    margin: 16,
-    right: 0,
-    elevation: 12,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    borderRadius: 28,
-    zIndex: 999,
+    right: 16,
   },
-  fabContent: {
-    paddingHorizontal: 12,
-    paddingVertical: 6,
+  // Rarity border styles
+  rarityBorderCommon: {
+    borderColor: '#9e9e9e',
+    borderWidth: 2,
   },
-  fabLabel: {
-    fontSize: 12,
-    fontWeight: 'bold',
+  rarityBorderUncommon: {
+    borderColor: '#4caf50',
+    borderWidth: 2,
   },
-  // Optimized rarity border styles
-  rarityBorderCommon: { borderColor: '#808080', borderWidth: 2 },
-  rarityBorderUncommon: { borderColor: '#4FC3A1', borderWidth: 2 },
-  rarityBorderRare: { borderColor: '#3498DB', borderWidth: 2 },
-  rarityBorderEpic: { borderColor: '#9B5DE5', borderWidth: 2 },
-  rarityBorderLegendary: { borderColor: '#F1C40F', borderWidth: 2 },
-  rarityBorderMythic: { borderColor: '#E74C3C', borderWidth: 2 },
-  // Development metrics styles
-  devMetrics: {
-    position: 'absolute',
-    top: 10,
-    right: 10,
-    backgroundColor: 'rgba(0,0,0,0.8)',
-    padding: 8,
-    borderRadius: 4,
-    zIndex: 1000,
+  rarityBorderRare: {
+    borderColor: '#2196f3',
+    borderWidth: 2,
   },
-  devMetricsText: {
-    fontSize: 10,
-    fontFamily: 'monospace',
+  rarityBorderEpic: {
+    borderColor: '#9c27b0',
+    borderWidth: 2,
   },
-  devMetricsTextSmall: {
-    fontSize: 8,
-    fontFamily: 'monospace',
-    opacity: 0.8,
+  rarityBorderLegendary: {
+    borderColor: '#ff9800',
+    borderWidth: 2,
+  },
+  rarityBorderMythic: {
+    borderColor: '#f44336',
+    borderWidth: 2,
   },
 });
 

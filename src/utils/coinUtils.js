@@ -1,5 +1,7 @@
-import { collection, doc, getDocs, updateDoc } from 'firebase/firestore';
+import { collection, doc, updateDoc } from 'firebase/firestore';
+// 🚀 TRACKED: Automatic read monitoring
 import { db } from '../config/firebase';
+import { getDocs } from '../services/ReadTracking/TrackedFirestore';
 
 export const addCoinsToAllUsers = async () => {
   try {

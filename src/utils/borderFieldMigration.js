@@ -8,8 +8,10 @@
  * The fix: Ensure both fields are kept in sync and properly migrated
  */
 
-import { doc, getDoc, updateDoc } from 'firebase/firestore';
+import { doc, updateDoc } from 'firebase/firestore';
+// 🚀 TRACKED: Automatic read monitoring
 import { db } from '../config/firebase';
+import { getDoc } from '../services/ReadTracking/TrackedFirestore';
 
 /**
  * Migrate user border data to fix field naming inconsistency

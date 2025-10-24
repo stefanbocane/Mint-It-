@@ -9,8 +9,8 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { useAuth } from '../contexts/AuthContext';
-import { useGroup } from '../contexts/GroupContext';
+import { useAuth } from '../contexts/AuthContextSupabase';
+import { useGroup } from '../contexts/GroupContextSupabase';
 import UltraBatchService from '../services/UltraBatchService';
 import CacheService from '../services/caching/CacheService';
 import GlobalListenerCoordinator from '../utils/GlobalListenerCoordinator';

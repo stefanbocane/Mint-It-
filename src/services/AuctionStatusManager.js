@@ -7,10 +7,11 @@
  * 🚀 OPTIMIZED: Thread-safe operations and improved race condition prevention
  */
 
-import { doc, runTransaction, serverTimestamp } from 'firebase/firestore';
+import { doc, serverTimestamp } from 'firebase/firestore';
 import { db } from '../config/firebase';
 import CacheService from './caching/CacheService';
 import ErrorHandlingService from './ErrorHandlingService';
+import { runTransaction } from './ReadTracking/TrackedFirestore';
 
 class AuctionStatusManager {
   static _instance = null;

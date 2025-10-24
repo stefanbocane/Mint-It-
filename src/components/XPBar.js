@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import { useTheme } from 'react-native-paper';
 import Animated, { useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated';
-import { useAuth } from '../contexts/AuthContext';
+import { useAuth } from '../contexts/AuthContextSupabase';
 import { getLevelProgress } from '../services/XPService';
 
 const XPBar = ({ compact = false }) => {
@@ -101,11 +101,6 @@ const XPBar = ({ compact = false }) => {
             animatedProgressStyle
           ]} 
         />
-        
-        {/* Progress Text */}
-        <Text style={[styles.progressText, { color: theme.colors.onSurfaceVariant }]}>
-          {isMaxLevel ? 'MAX' : `${Math.round(progressPercentage)}%`}
-        </Text>
       </View>
       
       {/* Max Level Indicator */}
@@ -160,13 +155,6 @@ const styles = StyleSheet.create({
     borderRadius: 4,
     minWidth: 2,
   },
-  progressText: {
-    position: 'absolute',
-    top: -16,
-    right: 0,
-    fontSize: 10,
-    fontWeight: '600',
-  },
   maxLevelIndicator: {
     marginLeft: 4,
   },
@@ -180,7 +168,7 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(255, 255, 255, 0.9)',
     borderRadius: 12,
     paddingVertical: 4,
-    paddingHorizontal: 6,
+    paddingHorizontal: 0, // Remove horizontal padding to push to far left
     marginVertical: 2,
     marginLeft: 0,
     marginRight: 0,

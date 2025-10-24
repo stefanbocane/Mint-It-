@@ -3,15 +3,15 @@ import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { useNavigation, useTheme as useNavTheme } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { useEffect, useMemo, useState } from 'react';
-import { Platform, StatusBar, StyleSheet, View } from 'react-native';
+import { Alert, Platform, StatusBar, StyleSheet, TouchableOpacity, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import BackgroundImage from '../components/BackgroundImage';
 import HeaderRight from '../components/HeaderRight';
-import { useAuth } from '../contexts/AuthContext';
-import { useGroup } from '../contexts/GroupContext';
+import { useAuth } from '../contexts/AuthContextSupabase';
+import { useGroup } from '../contexts/GroupContextSupabase';
 import { useTheme } from '../contexts/ThemeContext';
 import AuctionScreen from '../screens/AuctionScreen';
-import CoinScreen from '../screens/CoinScreen';
+import CoinScreen from '../screens/CoinScreenSupabase'; // ✅ Migrated to Supabase
 import CollectionScreen from '../screens/CollectionScreen';
 import CreateGroupScreen from '../screens/CreateGroupScreen';
 import CreateTradeScreen from '../screens/CreateTradeScreen';
@@ -52,6 +52,17 @@ const TabNavigator = () => {
   const navigation = useNavigation();
   const [initialTab] = useState(isNewUser ? 'Social' : null);
   
+  // Redirect to Social tab if no group is selected
+  useEffect(() => {
+    if (!currentGroup && user) {
+      // Only redirect if we're not already on the Social tab
+      const currentRoute = navigation.getState()?.routes[navigation.getState().index];
+      if (currentRoute?.name !== 'Social') {
+        navigation.navigate('Social');
+      }
+    }
+  }, [currentGroup, user, navigation]);
+  
   // Merge themes with priority to our context theme
   const theme = useMemo(() => ({
     colors: {
@@ -76,30 +87,33 @@ const TabNavigator = () => {
           height: 56, // Fixed header height to ensure consistent spacing
         },
         headerTintColor: theme.colors.text,
+        headerTitle: '', // Hide all screen titles
         headerTitleStyle: {
           fontWeight: '600',
           fontSize: 17,
           lineHeight: 22,
           letterSpacing: -0.41,
-          color: theme?.colors?.text || fallbackTheme.colors.text,
+          color: 'transparent', // Make title invisible
         },
         headerTitleContainerStyle: {
           paddingVertical: 0,
-          flex: 2, // Give title more space so it doesn't compress the header right
-          maxWidth: '60%', // Limit title width to prevent overlap with XP bar
+          paddingLeft: 0,
+          paddingRight: 0,
+          width: 0, // Collapse title container completely
+          opacity: 0, // Make it invisible
         },
         headerRightContainerStyle: {
           paddingRight: 10,
-          paddingLeft: 0, // Remove left padding to allow XP bar to be truly on the left
+          paddingLeft: 0, // No left padding to push XP bar to far left
           paddingVertical: 0,
           margin: 0,
-          justifyContent: 'center',
+          justifyContent: 'flex-start', // Align content to the left
           alignItems: 'center',
           flex: 1, // Allow the container to take available space
           minWidth: 200, // Ensure minimum width for proper layout
         },
         headerRight: () => <HeaderRight />,
-        headerTitleAlign: 'center',
+        headerTitleAlign: 'left', // Align left instead of center to avoid overlap
       };
     } catch (error) {
       console.warn('Error creating header options, using fallback:', error);
@@ -114,26 +128,31 @@ const TabNavigator = () => {
           height: 56, // Fixed header height for fallback as well
         },
         headerTintColor: fallbackTheme.colors.text,
+        headerTitle: '', // Hide all screen titles
         headerTitleStyle: {
           fontWeight: '600',
           fontSize: 17,
           lineHeight: 22,
           letterSpacing: -0.41,
-          color: fallbackTheme.colors.text,
+          color: 'transparent', // Make title invisible
         },
         headerTitleContainerStyle: {
           paddingVertical: 0,
+          paddingLeft: 0,
+          paddingRight: 0,
+          width: 0, // Collapse title container completely
+          opacity: 0, // Make it invisible
         },
         headerRightContainerStyle: {
           paddingRight: 10,
-          paddingLeft: 10,
+          paddingLeft: 0, // No left padding to push XP bar to far left
           paddingVertical: 0,
           margin: 0,
-          justifyContent: 'center',
+          justifyContent: 'flex-start', // Align content to the left
           alignItems: 'center',
         },
         headerRight: () => <HeaderRight />,
-        headerTitleAlign: 'center',
+        headerTitleAlign: 'left', // Align left instead of center to avoid overlap
       };
     }
   }, [theme]);
@@ -375,26 +394,94 @@ const TabNavigator = () => {
             <Tab.Screen 
               name="Collection" 
               component={CollectionStack} 
-              options={{ tabBarBadge: !currentGroup ? '!' : undefined }}
+              options={{ 
+                tabBarBadge: !currentGroup ? '🔒' : undefined,
+                tabBarButton: !currentGroup ? (props) => (
+                  <View style={{ opacity: 0.5 }}>
+                    <TouchableOpacity
+                      {...props}
+                      onPress={() => {
+                        // Show alert to join a group first
+                        Alert.alert(
+                          'Group Required',
+                          'Please join or create a group first to access your collection.',
+                          [{ text: 'OK' }]
+                        );
+                      }}
+                    />
+                  </View>
+                ) : undefined
+              }}
             />
             <Tab.Screen 
               name="The Mint" 
               component={AuctionStack} 
-              options={{ tabBarBadge: !currentGroup ? '!' : undefined }}
+              options={{ 
+                tabBarBadge: !currentGroup ? '🔒' : undefined,
+                tabBarButton: !currentGroup ? (props) => (
+                  <View style={{ opacity: 0.5 }}>
+                    <TouchableOpacity
+                      {...props}
+                      onPress={() => {
+                        // Show alert to join a group first
+                        Alert.alert(
+                          'Group Required',
+                          'Please join or create a group first to access auctions.',
+                          [{ text: 'OK' }]
+                        );
+                      }}
+                    />
+                  </View>
+                ) : undefined
+              }}
             />
             <Tab.Screen 
               name="Coin" 
               component={CoinStack} 
-              options={{ tabBarBadge: !currentGroup ? '!' : undefined }}
+              options={{ 
+                tabBarBadge: !currentGroup ? '🔒' : undefined,
+                tabBarButton: !currentGroup ? (props) => (
+                  <View style={{ opacity: 0.5 }}>
+                    <TouchableOpacity
+                      {...props}
+                      onPress={() => {
+                        // Show alert to join a group first
+                        Alert.alert(
+                          'Group Required',
+                          'Please join or create a group first to access coins.',
+                          [{ text: 'OK' }]
+                        );
+                      }}
+                    />
+                  </View>
+                ) : undefined
+              }}
             />
             <Tab.Screen 
               name="Trades" 
               component={TradesStack} 
-              options={{ tabBarBadge: !currentGroup ? '!' : undefined }}
+              options={{ 
+                tabBarBadge: !currentGroup ? '🔒' : undefined,
+                tabBarButton: !currentGroup ? (props) => (
+                  <View style={{ opacity: 0.5 }}>
+                    <TouchableOpacity
+                      {...props}
+                      onPress={() => {
+                        // Show alert to join a group first
+                        Alert.alert(
+                          'Group Required',
+                          'Please join or create a group first to access trades.',
+                          [{ text: 'OK' }]
+                        );
+                      }}
+                    />
+                  </View>
+                ) : undefined
+              }}
             />
             <Tab.Screen 
               name="Social" 
-              component={SocialStack} 
+              component={SocialStack}
               options={{
                 tabBarLabel: 'Social',
                 tabBarIcon: ({ color, size }) => (

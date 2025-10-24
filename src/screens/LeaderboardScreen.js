@@ -2,8 +2,7 @@ import { useNavigation } from '@react-navigation/native';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { FlatList, Linking, StyleSheet, TouchableOpacity, View } from 'react-native';
 import { ActivityIndicator, Button, Surface, Text, useTheme } from 'react-native-paper';
-import { useGroup } from '../contexts/GroupContext';
-import CacheService from '../services/caching/CacheService';
+import { useGroup } from '../contexts/GroupContextSupabase';
 import { RARITY_COLORS, RARITY_TYPES } from '../utils/rarity';
 
 // Error Boundary for LeaderboardScreen
@@ -81,7 +80,7 @@ const LeaderboardScreen = ({ groupId: propGroupId }) => {
     };
   }, []);
 
-  // 🚀 ULTRA-OPTIMIZED: Pre-computed leaderboard with massive read reduction
+  // 🚀 ULTRA-OPTIMIZED: Always show all group members ranked by weighted card rarity
   const fetchLeaderboardData = useCallback(async (forceRefresh = false) => {
     if (!activeGroupId) {
       console.log('No group ID available for leaderboard');
@@ -96,31 +95,18 @@ const LeaderboardScreen = ({ groupId: propGroupId }) => {
 
     try {
       console.log(`🚀 Ultra-Optimized Leaderboard: Fetching for group ${activeGroupId}...`);
-      
-      // OPTIMIZATION 1: Check for pre-computed leaderboard first
-      const preComputedCacheKey = `leaderboard_precomputed_${activeGroupId}`;
-      
-      if (!forceRefresh) {
-        const cachedLeaderboard = await CacheService.getValue(preComputedCacheKey);
-        if (cachedLeaderboard && Array.isArray(cachedLeaderboard) && cachedLeaderboard.length > 0) {
-          console.log(`✅ Cache hit: Using pre-computed leaderboard (${cachedLeaderboard.length} users)`);
-          if (mountedRef.current) {
-            setUsers(cachedLeaderboard);
-            setLastRefresh(new Date());
-            setLoading(false);
-          }
-          return;
-        }
-      }
-      
-      // OPTIMIZATION 2: Single aggregated query for all leaderboard data
-      const { db } = await import('../config/firebase');
-      const { collection, query, where, getDocs, writeBatch, doc } = await import('firebase/firestore');
-      
-      // Step 1: Get group members (SINGLE READ)
-      const groupDoc = await CacheService.getDocument('groups', activeGroupId, { ttl: CACHE_TTL });
-      
-      if (!groupDoc || !groupDoc.members || groupDoc.members.length === 0) {
+
+      const { supabase } = await import('../config/supabase');
+
+      // STEP 1: Get group and its members
+      const { data: groupData, error: groupError } = await supabase
+        .from('groups')
+        .select('members')
+        .eq('id', activeGroupId)
+        .single();
+
+      if (groupError || !groupData) {
+        console.log('Group not found:', groupError);
         if (mountedRef.current) {
           setUsers([]);
           setLastRefresh(new Date());
@@ -129,115 +115,152 @@ const LeaderboardScreen = ({ groupId: propGroupId }) => {
         return;
       }
 
-      // Step 2: Get all user data in batch (SINGLE READ)
-      const usersData = await CacheService.getDocuments('users', groupDoc.members, { ttl: CACHE_TTL });
-      
-      // Step 3: Single aggregated query for ALL cards in the group (SINGLE READ instead of N reads)
-      const allCardsQuery = query(
-        collection(db, 'cards'),
-        where('groupId', '==', activeGroupId)
-      );
-      
-      const allCardsSnapshot = await getDocs(allCardsQuery);
-      const allCardsData = allCardsSnapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      }));
+      const memberIds = groupData.members || [];
 
-      console.log(`📊 Processing ${allCardsData.length} total cards for ${groupDoc.members.length} members`);
-      
-      // Step 4: Group cards by owner and calculate scores
-      const cardsByOwner = {};
-      allCardsData.forEach(card => {
-        const ownerId = card.ownerId || card.userId;
-        if (ownerId && groupDoc.members.includes(ownerId)) {
-          if (!cardsByOwner[ownerId]) {
-            cardsByOwner[ownerId] = [];
+      console.log('🔍 DEBUG: Group data:', groupData);
+      console.log('🔍 DEBUG: memberIds type:', typeof memberIds, 'isArray:', Array.isArray(memberIds));
+      console.log('🔍 DEBUG: memberIds raw:', memberIds);
+
+      if (memberIds.length === 0) {
+        console.log('⚠️ No members in group - memberIds is empty!');
+        if (mountedRef.current) {
+          setUsers([]);
+          setLastRefresh(new Date());
+          setLoading(false);
+        }
+        return;
+      }
+
+      console.log(`📊 Found ${memberIds.length} group members:`, memberIds);
+
+      // STEP 2: Fetch user profiles for all members
+      const { data: userProfiles, error: usersError } = await supabase
+        .from('users')
+        .select('id, username, display_name, email, avatar_url')
+        .in('id', memberIds);
+
+      if (usersError) {
+        console.error('❌ Error fetching user profiles:', usersError);
+      }
+
+      const profiles = userProfiles || [];
+      console.log(`👥 Fetched ${profiles.length} user profiles out of ${memberIds.length} members`);
+      console.log('🔍 DEBUG: User profiles:', profiles.map(p => ({ id: p.id, username: p.username || p.email })));
+
+      // Debug: Show which members are missing profiles
+      if (profiles.length < memberIds.length) {
+        const profileIds = new Set(profiles.map(p => p.id));
+        const missingIds = memberIds.filter(id => !profileIds.has(id));
+        console.error('⚠️ MISSING PROFILES for member IDs:', missingIds);
+        console.error('⚠️ This means these users in the group DO NOT have entries in the users table');
+      }
+
+      // Check for missing profiles and warn
+      const profileIds = profiles.map(p => p.id);
+      const missingProfileIds = memberIds.filter(id => !profileIds.includes(id));
+      if (missingProfileIds.length > 0) {
+        console.warn(`⚠️ ${missingProfileIds.length} group member(s) have no user profile:`, missingProfileIds);
+        console.warn('This may indicate incomplete user registration or orphaned group memberships');
+      }
+
+      // STEP 3: Calculate scores for each member based on their cards
+      const userScores = {};
+      const userCardCounts = {};
+      const userCardCountByRarity = {};
+
+      // Query all cards for this group (only available cards, not in auction/trade)
+      const { data: cards, error: cardsError } = await supabase
+        .from('cards')
+        .select('owner_id, rarity, name, status, in_auction, in_trade')
+        .eq('group_id', activeGroupId)
+        .eq('in_auction', false)
+        .eq('in_trade', false)
+        .eq('status', 'available');
+
+      if (cardsError) {
+        console.error('❌ Error fetching cards:', cardsError);
+      }
+
+      const groupCards = cards || [];
+      console.log(`🔍 Found ${groupCards.length} available cards in group ${activeGroupId}`);
+
+      // Debug: Show unique owner IDs from cards
+      const uniqueOwnerIds = [...new Set(groupCards.map(c => c.owner_id).filter(Boolean))];
+      console.log(`🔍 DEBUG: Unique owner IDs from cards (${uniqueOwnerIds.length}):`, uniqueOwnerIds);
+
+      groupCards.forEach(card => {
+        const userId = card.owner_id;
+
+        if (userId && memberIds.includes(userId)) {
+          if (!userScores[userId]) {
+            userScores[userId] = 0;
+            userCardCounts[userId] = 0;
+            userCardCountByRarity[userId] = {};
           }
-          cardsByOwner[ownerId].push(card);
-        }
-      });
 
-      // Step 5: Calculate leaderboard data
-      const leaderboardData = [];
-      
-      for (let index = 0; index < groupDoc.members.length; index++) {
-        const memberId = groupDoc.members[index];
-        const user = usersData[index];
-        
-        if (!user) {
-          console.warn(`⚠️ No user data found for member ${memberId}`);
-          continue;
-        }
+          const rarityWeight = RARITY_WEIGHTS[card.rarity] || 1;
+          userScores[userId] += rarityWeight;
+          userCardCounts[userId] += 1;
 
-        const userCards = cardsByOwner[memberId] || [];
-        const userDisplayName = user.displayName || user.name || 'Anonymous User';
-        
-        // Calculate scores and rarity distribution
-        let score = 0;
-        let totalCards = userCards.length;
-        let cardCountByRarity = {};
-        
-        userCards.forEach(card => {
+          // Track cards by rarity
           const rarity = card.rarity || 'common';
-          const rarityWeight = RARITY_WEIGHTS[rarity] || 1;
-          
-          cardCountByRarity[rarity] = (cardCountByRarity[rarity] || 0) + 1;
-          score += rarityWeight;
-        });
+          userCardCountByRarity[userId][rarity] = (userCardCountByRarity[userId][rarity] || 0) + 1;
+        }
+      });
 
-        leaderboardData.push({
-          id: memberId,
-          displayName: userDisplayName,
-          username: user.username || null,
-          score,
-          totalCards,
-          cardCountByRarity,
-          rank: 0 // Will be assigned after sorting
-        });
-      }
-      
-      // Step 6: Sort and rank users
-      leaderboardData.sort((a, b) => b.score - a.score);
-      leaderboardData.forEach((user, index) => {
-        user.rank = index + 1;
-      });
-      
-      // Step 7: Cache the computed leaderboard with longer TTL
-      await CacheService.setValue(preComputedCacheKey, leaderboardData, { ttl: LEADERBOARD_CACHE_TTL });
-      
-      // OPTIMIZATION 3: Pre-compute and cache individual user stats for other screens
-      const batch = writeBatch(db);
-      const updatePromises = [];
-      
-      leaderboardData.forEach(userData => {
-        // Cache individual user stats for reuse
-        const userStatsKey = `user_leaderboard_stats_${userData.id}_${activeGroupId}`;
-        updatePromises.push(
-          CacheService.setValue(userStatsKey, {
-            score: userData.score,
-            totalCards: userData.totalCards,
-            cardCountByRarity: userData.cardCountByRarity,
-            lastUpdated: new Date().toISOString()
-          }, { ttl: LEADERBOARD_CACHE_TTL })
-        );
-      });
-      
-      // Execute cache updates in parallel
-      await Promise.allSettled(updatePromises);
-      
+      console.log('🔍 DEBUG: User scores summary:', Object.entries(userScores).map(([uid, score]) =>
+        `${uid.slice(0, 8)}...: ${score} pts, ${userCardCounts[uid]} cards`
+      ));
+
+      // STEP 4: Build leaderboard entries for ALL members (even those with 0 cards or no profile)
+      const leaderboardEntries = memberIds
+        .map(memberId => {
+          // Find the user profile if it exists
+          const userProfile = profiles.find(p => p.id === memberId);
+
+          // If no profile exists, create a minimal entry
+          if (!userProfile) {
+            return {
+              id: memberId,
+              displayName: `User (${memberId.slice(0, 8)})`,
+              username: memberId.slice(0, 8),
+              score: userScores[memberId] || 0,
+              totalCards: userCardCounts[memberId] || 0,
+              cardCountByRarity: userCardCountByRarity[memberId] || {},
+              profilePicture: null,
+              isMissingProfile: true
+            };
+          }
+
+          // Normal entry with profile
+          return {
+            id: userProfile.id,
+            displayName: userProfile.display_name || userProfile.username || userProfile.email || 'Unknown',
+            username: userProfile.username || userProfile.email?.split('@')[0] || 'user',
+            score: userScores[userProfile.id] || 0,
+            totalCards: userCardCounts[userProfile.id] || 0,
+            cardCountByRarity: userCardCountByRarity[userProfile.id] || {},
+            profilePicture: userProfile.avatar_url || null,
+            isMissingProfile: false
+          };
+        })
+        .sort((a, b) => b.score - a.score); // Sort by score descending
+
+      console.log(`✅ Leaderboard computed with ${leaderboardEntries.length} users:`,
+        leaderboardEntries.map((u, i) => `${i+1}. ${u.displayName} (${u.score} pts, ${u.totalCards} cards)`));
+
       if (mountedRef.current) {
-        setUsers(leaderboardData);
+        setUsers(leaderboardEntries);
         setLastRefresh(new Date());
-        console.log(`✅ Ultra-optimized leaderboard: ${leaderboardData.length} users, Total DB reads: 3 (vs ${leaderboardData.length * 3 + 2} previously)`);
+        setLoading(false);
       }
-      
+
     } catch (error) {
-      console.error('LeaderboardScreen: Error fetching optimized leaderboard data:', error);
-      
+      console.error('LeaderboardScreen: Error fetching leaderboard data:', error);
+
       if (mountedRef.current) {
         setError('Failed to load leaderboard data. Please try again.');
-        
+
         // Handle Firebase index error
         if (error.message && error.message.includes('requires an index')) {
           const indexUrl = error.message.match(/https:\/\/console\.firebase\.google\.com[^\s]*/);
@@ -291,9 +314,16 @@ const LeaderboardScreen = ({ groupId: propGroupId }) => {
           <Text style={styles.rankText}>{index + 1}</Text>
         </View>
         <View style={styles.userInfo}>
-          <Text style={[styles.userName, { color: theme.colors.onSurface }]}>
-            {item.displayName || item.username || 'Anonymous User'}
-          </Text>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+            <Text style={[styles.userName, { color: theme.colors.onSurface }]}>
+              {item.displayName || item.username || 'Anonymous User'}
+            </Text>
+            {item.isMissingProfile && (
+              <Text style={[styles.missingProfileBadge, { backgroundColor: theme.colors.errorContainer, color: theme.colors.onErrorContainer }]}>
+                Incomplete
+              </Text>
+            )}
+          </View>
           <View style={styles.statsRow}>
             <Text style={[styles.userStats, { color: theme.colors.onSurfaceVariant }]}>
               Cards: {item.totalCards || 0}
@@ -391,29 +421,10 @@ const LeaderboardScreen = ({ groupId: propGroupId }) => {
     );
   }
 
-  // Empty state
-  if (users.length === 0) {
-    return (
-      <View style={styles.errorContainer}>
-        <Text style={[styles.errorText, { color: theme.colors.onSurface }]}>
-          No users found in this group.
-        </Text>
-        {activeGroupId && (
-          <Text style={[styles.debugText, { color: theme.colors.onSurfaceVariant }]}>
-            Current group: {activeGroupId}
-          </Text>
-        )}
-        <Button 
-          mode="outlined" 
-          onPress={refreshLeaderboard}
-          style={styles.actionButton}
-        >
-          Refresh
-        </Button>
-      </View>
-    );
-  }
 
+
+  console.log('🔍 LeaderboardScreen: Rendering with users:', users.length, 'Loading:', loading, 'Error:', error);
+  
   return (
     <View style={styles.container}>
       {/* Last refresh indicator */}
@@ -567,6 +578,14 @@ const styles = StyleSheet.create({
     fontSize: 14,
     marginTop: 10,
   },
+  missingProfileBadge: {
+    fontSize: 10,
+    fontWeight: 'bold',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 8,
+    overflow: 'hidden',
+  },
 });
 
 // Wrap LeaderboardScreen with error boundary
@@ -576,4 +595,4 @@ const LeaderboardScreenWithErrorBoundary = (props) => (
   </LeaderboardErrorBoundary>
 );
 
-export default LeaderboardScreenWithErrorBoundary; 
+export default LeaderboardScreenWithErrorBoundary;

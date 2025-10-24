@@ -1,12 +1,13 @@
 import {
     doc,
-    getDoc,
     runTransaction,
     serverTimestamp
 } from 'firebase/firestore';
+// 🚀 TRACKED: Automatic read monitoring
 import { db } from '../config/firebase';
 import { updateGems } from '../utils/gemOperations';
 import { RARITY_TYPES } from '../utils/rarity';
+import { getDoc } from './ReadTracking/TrackedFirestore';
 
 // Maximum level cap
 export const MAX_LEVEL = 30;

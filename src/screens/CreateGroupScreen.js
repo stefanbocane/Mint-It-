@@ -1,13 +1,11 @@
-import { addDoc, collection, doc, setDoc } from 'firebase/firestore';
 import { useState } from 'react';
-import { StyleSheet, View } from 'react-native';
+import { Alert, StyleSheet, View } from 'react-native';
 import { Appbar, Button, HelperText, Switch, Text, TextInput, useTheme } from 'react-native-paper';
 import ScreenBackground from '../components/ScreenBackground';
-import { db } from '../config/firebase';
-import { useAuth } from '../contexts/AuthContext';
-import { useGroup } from '../contexts/GroupContext';
-import { handleOneTimeInitialCoinAward } from '../utils/balanceUtils';
-import { checkGroupMembershipLimit } from '../utils/cardLimits';
+import { supabase } from '../config/supabase';
+import { useAuth } from '../contexts/AuthContextSupabase';
+import { useGroup } from '../contexts/GroupContextSupabase';
+import CacheService from '../services/caching/CacheService';
 
 const CreateGroupScreen = ({ navigation }) => {
   const { user } = useAuth();
@@ -20,11 +18,16 @@ const CreateGroupScreen = ({ navigation }) => {
   const [error, setError] = useState('');
 
   const handleCreateGroup = async () => {
-    if (!user || !user.uid) {
+    console.log('🔵 Create group called', { user: user?.id, name: name.trim() });
+
+    // Supabase uses user.id instead of user.uid
+    if (!user || !user.id) {
+      console.log('❌ No user logged in');
       setError('You must be logged in to create a group.');
       return;
     }
     if (!name.trim()) {
+      console.log('❌ Group name empty');
       setError('Group name is required');
       return;
     }
@@ -32,57 +35,99 @@ const CreateGroupScreen = ({ navigation }) => {
     try {
       setLoading(true);
       setError('');
+      console.log('✅ Validation passed, creating group...');
 
-      // Check group membership limit first
-      const limitCheck = await checkGroupMembershipLimit(user.uid);
-      if (!limitCheck.canJoin) {
-        setError(`You have reached the maximum of ${limitCheck.limit} groups. You are currently in ${limitCheck.currentCount} groups.`);
+      // Check group membership limit (count current groups)
+      const { count: currentCount, error: countError } = await supabase
+        .from('groups')
+        .select('*', { count: 'exact', head: true })
+        .contains('members', [user.id]);
+
+      if (countError) throw countError;
+
+      const MAX_GROUPS = 10;
+      if (currentCount >= MAX_GROUPS) {
+        setError(`You have reached the maximum of ${MAX_GROUPS} groups. You are currently in ${currentCount} groups.`);
+        setLoading(false);
         return;
       }
 
-      // Create the group document
-      const groupRef = await addDoc(collection(db, 'groups'), {
-        name: name.trim(),
-        description: description.trim(),
-        isPrivate,
-        createdBy: user.uid,
-        createdAt: new Date().toISOString(),
-        memberCount: 1,
-        members: [user.uid],
-        code: name.trim().toLowerCase() // Set the group code to be the lowercase group name
+      // Get user profile for username
+      const { data: userData, error: userError } = await supabase
+        .from('users')
+        .select('username')
+        .eq('id', user.id)
+        .single();
+
+      if (userError) throw userError;
+
+      // Create the group in Supabase
+      const { data: newGroup, error: groupError } = await supabase
+        .from('groups')
+        .insert({
+          name: name.trim(),
+          description: description.trim() || null,
+          is_private: isPrivate,
+          created_by: user.id,
+          members: [user.id],
+          admin_ids: [user.id],
+          code: name.trim().toLowerCase(),
+          member_count: 1
+        })
+        .select()
+        .single();
+
+      if (groupError) throw groupError;
+
+      // Award initial coins (100) using Supabase function
+      const { data: balanceResult, error: balanceError } = await supabase.rpc('update_balance', {
+        p_user_id: user.id,
+        p_group_id: newGroup.id,
+        p_amount: 100
       });
 
-      // Add the creator as an admin in the members subcollection
-      await setDoc(doc(db, 'groups', groupRef.id, 'members', user.uid), {
-        role: 'admin',
-        joinedAt: new Date().toISOString()
-      });
+      if (balanceError) {
+        console.error('Error awarding initial coins:', balanceError);
+      } else {
+        console.log('✅ Initial coins awarded:', balanceResult);
+      }
 
-      // Award initial coins using the robust utility
-      const coinResult = await handleOneTimeInitialCoinAward(user.uid, groupRef.id, 100);
-      console.log('Initial coin award result:', coinResult);
+      // Invalidate relevant caches
+      await Promise.allSettled([
+        CacheService.invalidate(`groups:${user.id}`),
+        CacheService.invalidate(`all_groups_names`),
+        CacheService.invalidate(`user_groups_${user.id}`),
+        CacheService.invalidate(`users:${user.id}`),
+        CacheService.invalidate(`groups/${newGroup.id}/members:${user.id}`),
+        CacheService.invalidate(`groups:${newGroup.id}`)
+      ]);
 
-      // Refresh groups and switch to the new group
-      await refreshGroups();
-      const newGroup = {
-        id: groupRef.id,
-        name: name.trim(),
-        description: description.trim(),
-        isPrivate,
-        createdBy: user.uid,
-        createdAt: new Date().toISOString(),
-        memberCount: 1,
-        members: [user.uid],
-        code: name.trim().toLowerCase()
+      // Format group for GroupContext
+      const formattedGroup = {
+        id: newGroup.id,
+        name: newGroup.name,
+        description: newGroup.description,
+        isPrivate: newGroup.is_private,
+        createdBy: newGroup.created_by,
+        createdAt: newGroup.created_at,
+        memberCount: newGroup.member_count,
+        members: newGroup.members,
+        code: newGroup.code
       };
-      // Add to groups list immediately and switch
-      addGroup(newGroup);
-      switchGroup(newGroup);
 
-      navigation.goBack();
+      // Add to groups list and switch to it
+      addGroup(formattedGroup);
+      switchGroup(formattedGroup);
+
+      console.log('✅ Group created and added to GroupContext');
+
+      // Show success message
+      Alert.alert('Success', 'Group created successfully!', [
+        { text: 'OK', onPress: () => navigation.goBack() }
+      ]);
     } catch (error) {
       console.error('Error creating group:', error);
-      setError('Failed to create group. Please try again.');
+      setError(error.message || 'Failed to create group. Please try again.');
     } finally {
       setLoading(false);
     }

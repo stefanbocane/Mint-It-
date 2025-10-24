@@ -1,8 +1,8 @@
 import { MaterialIcons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
 import { StyleSheet, TouchableOpacity, View } from 'react-native';
-import { useAuth } from '../contexts/AuthContext';
-import { useGroup } from '../contexts/GroupContext';
+import { useAuth } from '../contexts/AuthContextSupabase';
+import { useGroup } from '../contexts/GroupContextSupabase';
 import { useTheme } from '../contexts/ThemeContext';
 import BalanceDisplay from './BalanceDisplay';
 import GemDisplay from './GemDisplay';
@@ -66,11 +66,15 @@ const HeaderRight = ({ showProfileButton = false }) => {
     );
   }
 
-  // COLLECTION SCREENS: XP bar on far left only
-  if (isCollectionScreen) {
+  // COLLECTION SCREENS: XP bar on left, gems and balance displays on right
+  if (isCollectionScreen && currentGroup) {
     return (
-      <View style={styles.leftOnlyContainer}>
+      <View style={styles.tradesContainer}>
         <XPBar compact={true} />
+        <View style={styles.rightSection}>
+          <GemDisplay size={20} style={styles.gemDisplay} />
+          <BalanceDisplay size="small" showLabel={false} />
+        </View>
       </View>
     );
   }
@@ -101,7 +105,19 @@ const HeaderRight = ({ showProfileButton = false }) => {
     );
   }
 
-  // DEFAULT: XP bar on left only for any other screens
+  // DEFAULT: XP bar on left, balance display on right for all other screens
+  if (currentGroup) {
+    return (
+      <View style={styles.tradesContainer}>
+        <XPBar compact={true} />
+        <View style={styles.rightSection}>
+          <BalanceDisplay size="small" showLabel={false} />
+        </View>
+      </View>
+    );
+  }
+  
+  // Fallback if no group: Just XP bar
   return (
     <View style={styles.leftOnlyContainer}>
       <XPBar compact={true} />

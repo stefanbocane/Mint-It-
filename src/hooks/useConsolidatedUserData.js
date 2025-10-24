@@ -11,12 +11,14 @@
  * - Memory efficient state management
  */
 
-import { doc, onSnapshot } from 'firebase/firestore';
+import { doc } from 'firebase/firestore';
+// 🚀 TRACKED: Automatic read monitoring
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { onSnapshot } from '../services/ReadTracking/TrackedFirestore';
 
 import { db } from '../config/firebase';
-import { useAuth } from '../contexts/AuthContext';
-import { useGroup } from '../contexts/GroupContext';
+import { useAuth } from '../contexts/AuthContextSupabase';
+import { useGroup } from '../contexts/GroupContextSupabase';
 import centralizedCacheManager from '../utils/centralizedCacheManager';
 
 const CACHE_TTL = 2 * 60 * 1000; // 2 minutes for user data

@@ -10,13 +10,13 @@
 import {
     collection,
     doc,
-    getDoc,
-    getDocs,
     query,
     where,
     writeBatch
 } from 'firebase/firestore';
+// 🚀 TRACKED: Automatic read monitoring
 import { db } from '../config/firebase';
+import { getDoc, getDocs } from './ReadTracking/TrackedFirestore';
 
 class BackgroundAuctionCompletionService {
   constructor() {

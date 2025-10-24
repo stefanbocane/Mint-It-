@@ -11,9 +11,9 @@
 
 import { useCallback, useState } from 'react';
 import { Alert } from 'react-native';
-import { useAuth } from '../contexts/AuthContext';
-import { useGroup } from '../contexts/GroupContext';
-import AuctionService from '../services/AuctionService';
+import { useAuth } from '../contexts/AuthContextSupabase';
+import { useGroup } from '../contexts/GroupContextSupabase';
+import AuctionService from '../services/AuctionServiceSupabase';
 import { getCorrectedNow } from '../utils/auctionTimerUtils';
 import { getOptimisticRarity } from '../utils/rarityUtils';
 
@@ -136,18 +136,21 @@ export const useBidding = (onAuctionUpdate) => {
       // Apply optimistic update first with live rarity calculation
       const isNewBidder = auction.currentBidder !== user.uid;
       const newBidderCount = isNewBidder ? (auction.uniqueBidderCount || 0) + 1 : (auction.uniqueBidderCount || 0);
-      
+
+      // Ensure we have a valid display name
+      const displayName = user.displayName || user.username || user.email || 'Anonymous';
+
       // Use centralized optimistic rarity calculation
       const optimisticRarity = getOptimisticRarity(
         auction.currentRarity || auction.cardRarity || 'common',
         parseInt(amount),
         newBidderCount
       );
-      
+
       const optimisticUpdate = {
         currentBid: parseInt(amount),
         currentBidder: user.uid,
-        currentBidderName: user.displayName || user.username || user.email || 'Unknown User',
+        currentBidderName: displayName,
         currentRarity: optimisticRarity, // Now includes optimistic rarity calculation
         uniqueBidderCount: newBidderCount,
         lastBidTime: new Date(),
@@ -161,13 +164,13 @@ export const useBidding = (onAuctionUpdate) => {
       }
       
       // Note: Activity marking handled by consolidated bid service
-      
+
       // Make the actual bid request
       const result = await AuctionService.placeBid(
         auction.id,
         amount,
         user.uid,
-        user.displayName || user.email,
+        displayName,
         currentGroup.id
       );
       
@@ -177,7 +180,7 @@ export const useBidding = (onAuctionUpdate) => {
       const serverUpdate = {
         currentBid: result.newBid,
         currentBidder: user.uid,
-        currentBidderName: user.displayName || user.username || user.email || 'Unknown User',
+        currentBidderName: displayName,
         currentRarity: result.newRarity,
         uniqueBidderCount: result.bidderCount,
         lastBidTime: new Date(),
@@ -308,4 +311,4 @@ export const useBidding = (onAuctionUpdate) => {
     // Stats
     biddingReadCount
   };
-}; 
+};

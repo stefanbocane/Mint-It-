@@ -1,6 +1,8 @@
 // Utilities for optimizing auction data handling
-import { collection, doc, getDoc, limit, orderBy, query, startAfter, updateDoc, where, writeBatch } from 'firebase/firestore';
+import { collection, doc, limit, orderBy, query, startAfter, updateDoc, where, writeBatch } from 'firebase/firestore';
+// 🚀 TRACKED: Automatic read monitoring
 import { db } from '../config/firebase';
+import { getDoc } from '../services/ReadTracking/TrackedFirestore';
 import { retryFirestoreOperation } from './firebaseErrorHandler';
 import { getCachedDoc, getCachedQuery, invalidateCache, updateCache } from './firestoreUtils';
 

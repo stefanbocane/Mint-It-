@@ -1,5 +1,8 @@
-import { doc, getDoc, runTransaction, writeBatch } from 'firebase/firestore';
+import { doc, writeBatch } from 'firebase/firestore';
+import { runTransaction } from '../services/ReadTracking/TrackedFirestore';
+// 🚀 TRACKED: Automatic read monitoring
 import { db } from '../config/firebase';
+import { getDoc } from '../services/ReadTracking/TrackedFirestore';
 import { updateCache } from './cacheUtils';
 import { getCachedDoc } from './firestoreUtils';
 

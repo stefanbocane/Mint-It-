@@ -7,10 +7,12 @@
  * 🚀 OPTIMIZED: Fixed memory leaks and improved listener management
  */
 
-import { collection, doc, limit, onSnapshot, query, serverTimestamp, updateDoc, where } from 'firebase/firestore';
+import { collection, doc, limit, query, serverTimestamp, updateDoc, where } from 'firebase/firestore';
+// 🚀 TRACKED: Automatic read monitoring
 import { db } from '../config/firebase';
 import CacheService from './caching/CacheService';
 import ErrorHandlingService from './ErrorHandlingService';
+import { onSnapshot } from './ReadTracking/TrackedFirestore';
 
 class AuctionCompletionService {
   static _instance = null;
@@ -469,8 +471,14 @@ class AuctionCompletionService {
     const updatePromises = cardsToUpdate.map(async ({ cardId, updates }) => {
       try {
         const cardRef = doc(db, 'cards', cardId);
-        await updateDoc(cardRef, updates);
-        console.log(`✅ Updated card ${cardId} with rarity ${updates.rarity}`);
+        // Add inAuction: false and status: 'available' to clear auction flags
+        const completeUpdates = {
+          ...updates,
+          inAuction: false,
+          status: 'available'
+        };
+        await updateDoc(cardRef, completeUpdates);
+        console.log(`✅ Updated card ${cardId} with rarity ${updates.rarity} and cleared auction flags`);
       } catch (error) {
         console.error(`❌ Failed to update card ${cardId}:`, error);
       }

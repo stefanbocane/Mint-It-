@@ -18,7 +18,7 @@ export {
 } from './queryOptimizer';
 
 // User data hooks and contexts
-export { UnifiedUserDataProvider, useUnifiedUserData } from '../contexts/UnifiedUserDataContext';
+export { UnifiedUserDataProvider, useUnifiedUserData } from '../contexts/UnifiedUserDataContextSupabase';
 export { useUserData } from '../hooks/useUserData';
 
 // Database utilities (existing)
@@ -28,7 +28,7 @@ export { batchUpdateWithCache } from './dbOptimizationUtils';
 export { aggregateQueryResults, createQueryConfig } from './queryAggregator';
 
 // Firestore utilities (existing)
-export { setupCachedQueryListenerWithChanges } from './firestoreUtils';
+// setupCachedQueryListenerWithChanges has been removed - see firestoreUtils.js for migration path
 
 // Performance monitoring
 export { default as performanceMonitor, usePerformanceMonitoring } from './performanceMonitor';

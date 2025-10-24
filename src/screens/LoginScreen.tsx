@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { Image, StyleSheet, View } from 'react-native';
 import { Button, Checkbox, Text, TextInput } from 'react-native-paper';
 import ScreenBackground from '../components/ScreenBackground';
-import { useAuth } from '../contexts/AuthContext';
+import { useAuth } from '../contexts/AuthContextSupabase';
 import { useTheme } from '../contexts/ThemeContext';
 import { RootStackNavigationProp } from '../navigation/types';
 

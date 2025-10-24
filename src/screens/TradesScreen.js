@@ -47,14 +47,10 @@ import { useCallback, useEffect, useMemo, useReducer, useRef } from 'react';
 import { ActivityIndicator, FlatList, RefreshControl, StyleSheet, View } from 'react-native';
 import { Button, Card, Divider, FAB, SegmentedButtons, Text, useTheme } from 'react-native-paper';
 import ScreenBackground from '../components/ScreenBackground';
-import { useAuth } from '../contexts/AuthContext';
-import { GROUP_CHANGED_EVENT, useGroup } from '../contexts/GroupContext';
-import { clearExpiredCache } from '../utils/cacheUtils';
+import { useAuth } from '../contexts/AuthContextSupabase';
+import { GROUP_CHANGED_EVENT, useGroup } from '../contexts/GroupContextSupabase';
 import EventManager from '../utils/eventManager';
-
-// OPTIMIZED: Import new optimization services
-import OptimizedPaginationService from '../services/OptimizedPaginationService';
-import UltraBatchService from '../services/UltraBatchService';
+import { setPayload as cacheTradePayload } from '../utils/GlobalPayloadCache';
 
 // Constants for better maintainability
 const TRADE_STATUS_COLORS = {
@@ -329,8 +325,8 @@ const useOptimizedTrades = (user, currentGroup) => {
 
   // HYPER-OPTIMIZED: Predictive caching with intelligent pre-loading
   const fetchOptimizedTrades = useCallback(async (options = {}) => {
-    const { pageSize = PAGE_SIZE, cursor = null, isInitial = true, prefetch = false } = options;
-    
+    const { pageSize = PAGE_SIZE, cursor = null, isInitial = true, prefetch = false, forceRefresh = false } = options;
+
     if (!user || !currentGroup || !mountedRef.current) {
       return { trades: [], pagination: { hasMore: false } };
     }
@@ -339,55 +335,85 @@ const useOptimizedTrades = (user, currentGroup) => {
       // Intelligent cache key with predictive elements
       const cacheKey = `trades_${currentGroup.id}_${state.filterStatus}_${user.uid}_${pageSize}_${cursor?.id || 'initial'}`;
       const oppositeCacheKey = `trades_${currentGroup.id}_${state.filterStatus === 'active' ? 'completed' : 'active'}_${user.uid}_${pageSize}_initial`;
-      
-      // PREDICTIVE CACHE CHECK: Check both current and opposite filter caches
-      if (cacheRef.current.has(cacheKey)) {
+
+      // PREDICTIVE CACHE CHECK: Skip cache if force refresh
+      if (!forceRefresh && cacheRef.current.has(cacheKey)) {
         const cached = cacheRef.current.get(cacheKey);
         if (Date.now() - cached.timestamp < (isInitial ? 45000 : 30000)) { // Longer cache for initial loads
           if (__DEV__) {
             console.log(`🎯 HYPER-OPT: Component cache hit for ${cacheKey}`);
           }
           trackPerformanceEvent('INTELLIGENT_CACHE_HIT', { cacheKey })
-          
+
           // BACKGROUND PREFETCH: Pre-load opposite filter if this is initial load
           if (isInitial && !prefetch && !cacheRef.current.has(oppositeCacheKey)) {
             setTimeout(() => {
               if (mountedRef.current) {
-                                 fetchOptimizedTrades({ 
-                   pageSize, 
-                   cursor: null, 
-                   isInitial: true, 
-                   prefetch: true 
+                                 fetchOptimizedTrades({
+                   pageSize,
+                   cursor: null,
+                   isInitial: true,
+                   prefetch: true
                  }).then(() => {
                    trackPerformanceEvent('PREFETCH_HIT', { filter: state.filterStatus === 'active' ? 'completed' : 'active' });
                  }).catch(() => {}); // Silent failure for prefetch
               }
             }, 100);
           }
-          
+
           return cached.data;
         }
+      }
+
+      if (forceRefresh && __DEV__) {
+        console.log('🔄 HYPER-OPT: Force refresh - bypassing cache');
       }
 
       if (__DEV__) {
         console.log(`🚀 HYPER-OPT: ${prefetch ? 'Prefetching' : 'Fetching'} trades - Filter: ${state.filterStatus}`);
       }
 
-      // Enhanced service call with predictive parameters
-      const result = await OptimizedPaginationService.paginateTradeHistory(currentGroup.id, {
-        pageSize: prefetch ? Math.min(pageSize, 5) : pageSize, // Smaller prefetch batches
-        cursor,
-        filterStatus: state.filterStatus === 'active' ? ['pending', 'offered', 'active'] : ['completed', 'rejected', 'canceled'],
-        userId: user.uid,
-        cacheKey,
-        cacheTTL: isInitial ? 90000 : 45000 // Extended cache for better performance
-      });
+      // SUPABASE: Fetch trades for current user
+      const { supabase } = await import('../config/supabase');
+      const currentUserId = user?.id || user?.uid;
 
-      let { trades, pagination } = result;
+      // Fetch trades where user is sender or receiver
+      const { data: tradesData, error: tradesError } = await supabase
+        .from('trades')
+        .select('*')
+        .eq('group_id', currentGroup.id)
+        .or(`sender_id.eq.${currentUserId},receiver_id.eq.${currentUserId}`)
+        .order('created_at', { ascending: false })
+        .limit(pageSize);
 
-      if (trades.length === 0) {
-        return { trades: [], pagination };
+      if (tradesError) {
+        console.error('Error fetching trades:', tradesError);
+        throw tradesError;
       }
+
+      // Map Supabase fields to expected format
+      let trades = (tradesData || []).map(trade => ({
+        id: trade.id,
+        senderId: trade.sender_id,
+        senderName: trade.sender_name,
+        senderAvatar: trade.sender_avatar,
+        receiverId: trade.receiver_id,
+        receiverName: trade.receiver_name,
+        receiverAvatar: trade.receiver_avatar,
+        offeredCards: trade.offered_cards || [],
+        requestedCards: trade.requested_cards || [],
+        groupId: trade.group_id,
+        status: trade.status,
+        timestamp: trade.created_at,
+        updatedAt: new Date(trade.updated_at).getTime(),
+        participantIds: trade.participant_ids || [trade.sender_id, trade.receiver_id]
+      }));
+
+      // Filter by status
+      const statusesToShow = state.filterStatus === 'active' ? ACTIVE_STATUSES : COMPLETED_STATUSES;
+      trades = trades.filter(trade => statusesToShow.has(trade.status));
+
+      let pagination = { hasMore: false, nextCursor: null };
 
       // Ultra-efficient batch enrichment
       const enrichedTrades = await batchEnrichTradesWithUsers(trades);
@@ -449,14 +475,29 @@ const useOptimizedTrades = (user, currentGroup) => {
       ].filter(id => id))];
 
       if (uniqueUserIds.length === 0) {
-        return trades.map(trade => addTradeMetadata(trade, user.uid));
+        return trades.map(trade => addTradeMetadata(trade, user.uid || user.id));
       }
 
-      // Ultra-efficient batch fetch with extended caching
-      const usersMap = await UltraBatchService.batchGetUsers(uniqueUserIds, {
-        cacheFirst: true,
-        cacheTTL: 5 * 60 * 1000, // 5-minute cache for user data
-        namespace: 'trades_users'
+      // Fetch user profiles from Supabase
+      const { supabase } = await import('../config/supabase');
+      const { data: usersData, error: usersError } = await supabase
+        .from('users')
+        .select('id, username, display_name, avatar_url')
+        .in('id', uniqueUserIds);
+
+      if (usersError) {
+        console.error('Error fetching users:', usersError);
+        throw usersError;
+      }
+
+      // Create users map
+      const usersMap = new Map();
+      (usersData || []).forEach(user => {
+        usersMap.set(user.id, {
+          displayName: user.display_name,
+          username: user.username,
+          profilePicture: user.avatar_url
+        });
       });
 
       // Single-pass enrichment
@@ -470,7 +511,7 @@ const useOptimizedTrades = (user, currentGroup) => {
           receiverName: receiverDetails?.displayName || receiverDetails?.username || 'Unknown User',
           senderAvatar: senderDetails?.profilePicture || null,
           receiverAvatar: receiverDetails?.profilePicture || null,
-          ...addTradeMetadata(trade, user.uid)
+          ...addTradeMetadata(trade, user.uid || user.id)
         };
 
         validateTradeObject(enrichedTrade);
@@ -482,7 +523,7 @@ const useOptimizedTrades = (user, currentGroup) => {
     } catch (error) {
       console.error('🚨 ULTRA-OPT: Failed to batch enrich trades:', error);
       return trades.map(trade => ({
-        ...addTradeMetadata(trade, user.uid),
+        ...addTradeMetadata(trade, user.uid || user.id),
         senderName: 'Unknown User',
         receiverName: 'Unknown User'
       }));
@@ -490,45 +531,46 @@ const useOptimizedTrades = (user, currentGroup) => {
   }, [user]);
 
   // HYPER-OPTIMIZED: Smart batched state management with minimal re-renders
-  const fetchTrades = useCallback(async (isInitial = true, retryAttempt = 0) => {
+  const fetchTrades = useCallback(async (isInitial = true, retryAttempt = 0, forceRefresh = false) => {
     const currentState = stateRef.current;
     if (!user || !currentGroup || !mountedRef.current) {
       return;
     }
-    
+
     if (!shouldAllowRequest()) {
       const timeRemaining = Math.ceil((CIRCUIT_BREAKER_TIMEOUT - (Date.now() - circuitBreakerState.lastFailureTime)) / 1000);
-      dispatch({ 
-        type: 'SET_ERROR', 
-        payload: { 
-          message: `Service temporarily unavailable. Retrying in ${timeRemaining} seconds.`, 
+      dispatch({
+        type: 'SET_ERROR',
+        payload: {
+          message: `Service temporarily unavailable. Retrying in ${timeRemaining} seconds.`,
           type: ERROR_TYPES.NETWORK,
           retryCount: retryAttempt + 1
-        } 
+        }
       });
       return;
     }
-    
+
     try {
       // BATCHED STATE UPDATES: Single transaction-like state update
       if (isInitial) {
-        dispatch({ 
-          type: 'BATCH_UPDATE', 
-          payload: { 
-            loading: true, 
-            refreshing: true, 
-            error: null, 
-            errorType: null 
-          } 
+        dispatch({
+          type: 'BATCH_UPDATE',
+          payload: {
+            loading: true,
+            refreshing: true,
+            error: null,
+            errorType: null
+          }
         });
       } else {
         dispatch({ type: 'SET_LOADING_MORE', payload: true });
       }
-      
+
       const { trades: fetchedTrades, pagination } = await fetchOptimizedTrades({
         pageSize: PAGE_SIZE,
         cursor: isInitial ? null : currentState.lastDoc?._docSnapshot,
-        isInitial
+        isInitial,
+        forceRefresh
       });
       
       if (!mountedRef.current) return;
@@ -619,12 +661,6 @@ const useOptimizedTrades = (user, currentGroup) => {
   useEffect(() => {
     mountedRef.current = true;
 
-    clearExpiredCache().then(count => {
-      if (__DEV__) {
-        console.log(`Cleared ${count} expired cache entries on TradesScreen mount`);
-      }
-    });
-
     return () => {
       mountedRef.current = false;
       cacheRef.current.clear();
@@ -645,7 +681,8 @@ const useOptimizedTrades = (user, currentGroup) => {
     dispatch,
     fetchTrades,
     fetchOptimizedTrades,
-    batchEnrichTradesWithUsers
+    batchEnrichTradesWithUsers,
+    cacheRef // Expose cache for manual clearing
   };
 };
 
@@ -653,8 +690,8 @@ const useOptimizedTrades = (user, currentGroup) => {
 const addTradeMetadata = (trade, userId) => ({
   isSender: trade.senderId === userId,
   isReceiver: trade.receiverId === userId,
-  createdAt: trade.createdAt?.toDate?.() || new Date(),
-  updatedAt: trade.updatedAt?.toDate?.() || new Date()
+  createdAt: trade.timestamp ? new Date(trade.timestamp) : new Date(),
+  updatedAt: trade.updatedAt ? new Date(trade.updatedAt) : new Date()
 });
 
 // HYPER-OPTIMIZED: Advanced performance monitoring with real-time analytics
@@ -749,7 +786,7 @@ const TradesScreen = () => {
   const navigation = useNavigation();
   const { user } = useAuth();
   const { currentGroup } = useGroup();
-  const { state, dispatch, fetchTrades, fetchOptimizedTrades, batchEnrichTradesWithUsers } = useOptimizedTrades(user, currentGroup);
+  const { state, dispatch, fetchTrades, fetchOptimizedTrades, batchEnrichTradesWithUsers, cacheRef } = useOptimizedTrades(user, currentGroup);
   const mountedRef = useRef(true);
 
   // Memoized status filters to prevent unnecessary re-renders
@@ -825,11 +862,15 @@ const TradesScreen = () => {
     fetchTrades(false);
   }, [state.isLoadingMore, state.hasMoreTrades, fetchTrades]);
 
-  // Update onRefresh to reset pagination
+  // Refresh trades by re-fetching (force refresh to bypass cache)
   const onRefresh = useCallback(async () => {
+    if (!user || !currentGroup) return;
+
     dispatch({ type: 'RESET_PAGINATION' });
-    await fetchTrades(true);
-  }, [fetchTrades]);
+    // Clear component cache on manual refresh
+    cacheRef.current.clear();
+    await fetchTrades(true, 0, true); // isInitial=true, retryAttempt=0, forceRefresh=true
+  }, [user, currentGroup, fetchTrades]);
 
   // Filter trades based on filter status
   useEffect(() => {
@@ -977,7 +1018,10 @@ const TradesScreen = () => {
           
           <Button 
             mode="contained" 
-            onPress={() => navigation.navigate('TradeDetails', { tradeId: item.id })}
+            onPress={() => {
+              cacheTradePayload(item.id, item);
+              navigation.navigate('TradeDetails', { tradeId: item.id });
+            }}
             style={styles.viewButton}
             accessible={true}
             accessibilityRole="button"

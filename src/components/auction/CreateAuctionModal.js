@@ -1,4 +1,5 @@
-import { addDoc, collection, doc, getDocs, query, updateDoc, where } from 'firebase/firestore';
+import { addDoc, collection, doc, query, updateDoc, where } from 'firebase/firestore';
+// 🚀 TRACKED: Automatic read monitoring
 import { useEffect, useState } from 'react';
 import {
     Alert,
@@ -12,13 +13,20 @@ import {
     View
 } from 'react-native';
 import { db } from '../../config/firebase';
-import { useAuth } from '../../contexts/AuthContext';
-import { useGroup } from '../../contexts/GroupContext';
+import { useAuth } from '../../contexts/AuthContextSupabase';
+import { useGroup } from '../../contexts/GroupContextSupabase';
+import { getDocs } from '../../services/ReadTracking/TrackedFirestore';
 import { RARITY_COLORS } from '../../utils/rarity';
 
 const CreateAuctionModal = ({ visible, onDismiss, onSuccess, initialCard }) => {
   const { user } = useAuth();
   const { currentGroup } = useGroup();
+
+  // Early return if no group context is available
+  if (visible && !currentGroup) {
+    console.warn('CreateAuctionModal: No current group available');
+    return null;
+  }
   
   const [cards, setCards] = useState([]);
   const [selectedCard, setSelectedCard] = useState(null);
@@ -48,7 +56,9 @@ const CreateAuctionModal = ({ visible, onDismiss, onSuccess, initialCard }) => {
   }, [visible, initialCard]);
 
   const loadCards = async () => {
-    if (!user?.uid || !currentGroup?.id) return;
+    if (!user?.uid || !currentGroup?.id) {
+      return;
+    }
 
     try {
       const cardsQuery = query(

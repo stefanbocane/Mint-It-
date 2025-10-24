@@ -4,8 +4,8 @@ import { Alert, ScrollView, StyleSheet, View } from 'react-native';
 import { Appbar, Button, IconButton, Surface, Text, TextInput, useTheme } from 'react-native-paper';
 import ScreenBackground from '../components/ScreenBackground';
 import { auth } from '../config/firebase';
-import { useAuth } from '../contexts/AuthContext';
-import { useGroup } from '../contexts/GroupContext';
+import { useAuth } from '../contexts/AuthContextSupabase';
+import { useGroup } from '../contexts/GroupContextSupabase';
 import { batchUpdateWithCache } from '../utils/dbOptimizationUtils';
 
 const SettingsScreen = ({ navigation }) => {

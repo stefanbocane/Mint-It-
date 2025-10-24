@@ -11,14 +11,16 @@
 
 import { useCallback, useState } from 'react';
 import { Alert } from 'react-native';
-import { useAuth } from '../contexts/AuthContext';
-import { useGroup } from '../contexts/GroupContext';
-import AuctionService from '../services/AuctionService';
+import { useAuth } from '../contexts/AuthContextSupabase';
+import { useGroup } from '../contexts/GroupContextSupabase';
+import { useUnifiedUserData } from '../contexts/UnifiedUserDataContextSupabase';
+import AuctionService from '../services/AuctionServiceSupabase';
 import useAuctionStore from '../services/UltraEfficientAuctionService';
 
 export const useOptimizedBidding = () => {
   const { user } = useAuth();
   const { currentGroup } = useGroup();
+  const { getBalance, refreshUserData, userData } = useUnifiedUserData(); // Get balance, refresh, and userData
   
   // FIXED: Stable state management
   const [modal, setModal] = useState({
@@ -36,51 +38,82 @@ export const useOptimizedBidding = () => {
   
   // THIRD PASS: Zero-read validation with client-side expiration checking
   const validateBid = useCallback((auction, amount) => {
-    if (!auction || !amount) return false;
+    if (!auction || !amount) {
+      console.log('❌ Bid validation failed: missing auction or amount');
+      return false;
+    }
     
     const numAmount = parseFloat(amount);
-    if (isNaN(numAmount) || numAmount <= 0) return false;
-    
-    // THIRD PASS: Client-side expiration check (zero reads)
-    if (isAuctionExpiredClientSide(auction.id, auction)) {
-      Alert.alert('Auction Expired', 'This auction has ended based on client-side timing');
+    if (isNaN(numAmount) || numAmount <= 0) {
+      console.log('❌ Bid validation failed: invalid amount', amount);
       return false;
     }
     
     // Check if bid is higher than current bid
     const currentBid = auction.currentBid || 0;
     if (numAmount <= currentBid) {
+      console.log('❌ Bid validation failed: bid too low', { numAmount, currentBid });
       Alert.alert('Invalid Bid', `Bid must be higher than current bid of ${currentBid}`);
       return false;
     }
     
-    // Check if auction is still active (using real-time cached data)
-    if (auction.status !== 'active') {
+    // Calculate time remaining from endTime if not provided
+    let timeRemaining = auction.timeRemaining;
+    if (timeRemaining === undefined && auction.endTime) {
+      const endTime = auction.endTime?.toDate ? auction.endTime.toDate() : new Date(auction.endTime);
+      timeRemaining = Math.max(0, endTime.getTime() - Date.now());
+    }
+    
+    console.log('🔍 Bid validation check:', {
+      auctionId: auction.id,
+      status: auction.status,
+      timeRemaining,
+      endTime: auction.endTime,
+      currentBid: auction.currentBid,
+      bidAmount: numAmount
+    });
+    
+    // Check if auction is still active - be more permissive
+    // Only reject if status is explicitly 'completed' or 'cancelled'
+    if (auction.status === 'completed' || auction.status === 'cancelled') {
+      console.log('❌ Bid validation failed: auction status is', auction.status);
       Alert.alert('Auction Ended', 'This auction is no longer active');
       return false;
     }
     
-    // THIRD PASS: Enhanced time remaining check with client confidence
-    const timeRemaining = auction.timeRemaining || 0;
-    if (timeRemaining <= 30000) { // 30 seconds buffer for network delays
-      Alert.alert('Auction Ending Soon', 'This auction is ending very soon. Bid may not be processed in time.');
+    // Check time remaining - only reject if we're SURE it's expired
+    if (timeRemaining !== undefined && timeRemaining <= 0) {
+      console.log('❌ Bid validation failed: time remaining is', timeRemaining);
+      Alert.alert('Auction Ended', 'This auction has already ended.');
       return false;
     }
     
+    // REMOVED: isAuctionExpiredClientSide check as it was too strict
+    
+    console.log('✅ Bid validation passed');
     return true;
-  }, [isAuctionExpiredClientSide]);
+  }, []);
   
   // Optimized bid placement with Zustand integration
   const placeBid = useCallback(async (auction, amount) => {
-    if (!validateBid(auction, amount)) return false;
+    console.log('💰 placeBid called:', { auctionId: auction?.id, amount, userId: user?.uid });
+    
+    if (!validateBid(auction, amount)) {
+      console.log('❌ placeBid aborted: validation failed');
+      return false;
+    }
     
     if (!user || !currentGroup) {
+      console.log('❌ placeBid aborted: no user or group');
       Alert.alert('Error', 'Please sign in to place a bid');
       return false;
     }
     
+    console.log('🚀 placeBid proceeding with bid placement');
     setProcessingAction(true);
-    
+
+    const bidAmount = parseFloat(amount);
+
     // Store original state for potential rollback
     const originalState = {
       currentBid: auction.currentBid,
@@ -90,47 +123,98 @@ export const useOptimizedBidding = () => {
       uniqueBidderCount: auction.uniqueBidderCount,
       lastBidTime: auction.lastBidTime
     };
-    
+
     try {
-      const bidAmount = parseFloat(amount);
-      
-      console.log(`💰 THIRD PASS: Placing bid ${bidAmount} on auction ${auction.id} (zero reads, complete client validation)`);
-      
+      console.log(`💰 THIRD PASS: Placing bid ${bidAmount} on auction ${auction.id}`);
+      console.log('📋 Auction data:', {
+        id: auction.id,
+        sellerId: auction.sellerId,
+        currentBid: auction.currentBid,
+        status: auction.status,
+        endTime: auction.endTime,
+        timeRemaining: auction.timeRemaining
+      });
+
+      // NOTE: Coin deduction now happens INSIDE AuctionService.placeBid transaction
+      // This ensures atomicity - if bid fails, coins are not deducted
+      // No more optimistic deduction or manual refunds needed!
+
+      // Ensure we have a valid display name from userData (uses display_name from users table)
+      const displayName = userData?.display_name || userData?.username || user.email || 'Anonymous';
+
       // THIRD PASS: Ultra-optimistic update with confidence scoring
-      const isNewBidder = auction.currentBidder !== user.uid;
+      const userId = user.id || user.uid; // Supabase uses id, Firebase uses uid
+      const isNewBidder = auction.currentBidder !== userId;
       const newBidderCount = isNewBidder ? (auction.uniqueBidderCount || 0) + 1 : (auction.uniqueBidderCount || 0);
-      
+
+      // Calculate optimistic rarity
+      const { calculateLiveRarity } = await import('../utils/auctionRarity');
+      const updatedAuctionData = {
+        ...auction,
+        currentBid: bidAmount,
+        uniqueBidderCount: newBidderCount
+      };
+      const optimisticRarity = calculateLiveRarity(updatedAuctionData, newBidderCount);
+
+      console.log(`🎯 Optimistic rarity calculated: ${optimisticRarity} (${newBidderCount} bidders, ${bidAmount} coins)`);
+
       updateAuction(currentGroup.id, auction.id, {
         currentBid: bidAmount,
-        currentBidder: user.uid,
-        currentBidderName: user.displayName || user.username,
+        currentBidder: userId,
+        currentBidderName: displayName,
         lastBidTime: new Date(),
         uniqueBidderCount: newBidderCount,
+        currentRarity: optimisticRarity,
         // THIRD PASS: Advanced optimistic flags
         _optimistic: true,
         _confidence: auction.urgencyLevel === 'CRITICAL' ? 0.95 : 0.9, // Higher confidence for urgent auctions
         _predictedSuccess: true,
         lastUpdated: Date.now()
       });
-      
+
       // Place actual bid (this will trigger real-time updates if successful)
+      console.log('📡 Calling AuctionService.placeBid with params:', {
+        auctionId: auction.id,
+        bidAmount,
+        userId: userId,
+        displayName,
+        groupId: currentGroup.id
+      });
+
       const result = await AuctionService.placeBid(
         auction.id,
         bidAmount,
-        user.uid,
-        user.displayName || user.username,
+        userId,
+        displayName,
         currentGroup.id
       );
       
+      console.log('📡 AuctionService.placeBid result:', result);
+      
       if (!result.success) {
+        console.log('❌ Bid placement failed:', result.error);
+        
+        // If bid failed due to race condition, refresh auction data
+        if (result.needsRefresh) {
+          console.log('🔄 Refreshing auction data due to race condition');
+          // Trigger auction list refresh to show latest bid
+          if (refreshAuctions) {
+            await refreshAuctions();
+          }
+        }
+        
         throw new Error(result.error || 'Failed to place bid');
       }
       
-      console.log(`✅ THIRD PASS: Server confirmed bid on ${auction.id} with ${result._confidence || 'standard'} confidence`);
-      
+      console.log(`✅ THIRD PASS: Server confirmed bid on ${auction.id}`);
+
+      // Refresh user balance to show updated coins immediately
+      console.log('🔄 Refreshing user balance after successful bid');
+      await refreshUserData();
+
       // Close modal on success
       closeModal();
-      
+
       return true;
       
     } catch (error) {
@@ -146,6 +230,9 @@ export const useOptimizedBidding = () => {
         lastUpdated: Date.now()
       });
       
+      // NOTE: No refund needed! Transaction handles everything atomically
+      // If bid failed, coins were never deducted
+      
       Alert.alert(
         'Bid Failed',
         error.message || 'Unable to place bid. Please try again.',
@@ -157,7 +244,7 @@ export const useOptimizedBidding = () => {
     } finally {
       setProcessingAction(false);
     }
-  }, [validateBid, user, currentGroup, updateAuction]);
+  }, [validateBid, user, currentGroup, updateAuction, refreshUserData, userData]);
   
   // Quick bid function with optimized amounts
   const quickBid = useCallback(async (auction) => {
@@ -279,4 +366,4 @@ export const useOptimizedBidding = () => {
     // For debugging
     validateBid
   };
-}; 
+};

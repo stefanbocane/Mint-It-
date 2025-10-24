@@ -1,8 +1,10 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { doc, getDoc } from 'firebase/firestore';
+import { doc } from 'firebase/firestore';
+// 🚀 TRACKED: Automatic read monitoring
 import { Alert } from 'react-native';
 import { db } from '../config/firebase';
-import { setupCachedQueryListener } from './firestoreUtils';
+import { getDoc } from '../services/ReadTracking/TrackedFirestore';
+import { getCachedDoc } from './firestoreUtils';
 
 // Constants
 const CLOCK_SYNC_KEY = 'auction_clock_sync';
@@ -391,72 +393,73 @@ export const checkRecentlyExpiredAuctions = async () => {
 };
 
 /**
- * Set up event listeners for a specific auction with optimized updates
+ * 🚀 OPTIMIZED: Load auction data without real-time listener
+ * Uses cached data with ConsolidatedBidService for bid updates
+ *
  * @param {string} auctionId - Auction ID
  * @param {Function} onUpdate - Callback when auction is updated
- * @param {Function} onBidPlaced - Callback when new bid is placed
+ * @param {Function} onBidPlaced - Callback when new bid is placed (handled by ConsolidatedBidService)
  * @param {Function} onError - Callback when error occurs
- * @returns {Function} Function to remove listeners
+ * @returns {Function} Function to cleanup
  */
-export const setupAuctionEventListeners = (auctionId, onUpdate, onBidPlaced, onError) => {
-  // Clear existing listeners if any
-  removeAuctionEventListeners(auctionId);
-  
+export const setupAuctionEventListeners = async (auctionId, onUpdate, onBidPlaced, onError) => {
   try {
     if (!auctionId) {
       console.error('Invalid auction ID provided to setupAuctionEventListeners');
       if (onError) onError(new Error('Invalid auction ID'));
       return () => {};
     }
-    
-    // Set up listener for the auction
-    const auctionRef = doc(db, 'auctions', auctionId);
-    const unsubscribe = setupCachedQueryListener(
-      auctionRef,
-      (auctionData) => {
-        // Create a safe data object with the ID even if data is incomplete
-        const safeData = {
-          id: auctionId,
-          ...(auctionData || {})
-        };
-        
-        // Check if the auction exists or is valid
+
+    // 🚀 OPTIMIZATION: Load auction data from cache (no listener!)
+    // Auction data is already cached via auctionOverviews
+    // Bid updates come from ConsolidatedBidService (FCM push notifications - Phase 1)
+    const loadAuctionData = async () => {
+      try {
+        const auctionData = await getCachedDoc('auctions', auctionId, {
+          ttl: 60 * 1000, // 1 minute cache
+          forceRefresh: false
+        });
+
         if (!auctionData) {
-          console.error(`Empty snapshot received for auction ${auctionId}`);
-          if (onError) onError(new Error(`Empty data received for auction ${auctionId}`));
+          console.error(`No data found for auction ${auctionId}`);
+          if (onError) onError(new Error(`No data found for auction ${auctionId}`));
           return;
         }
-        
+
+        // Create a safe data object with the ID
+        const safeData = {
+          id: auctionId,
+          ...auctionData
+        };
+
         // Create a unique notification key that includes auction ID and status
         const notificationKey = `${auctionId}_${safeData.status || 'unknown'}`;
-        
+
         // Check if auction status has changed to anything other than "active"
         if (safeData.status && safeData.status !== 'active') {
           // Check if we've already sent a notification for this auction end
           if (!auctionEndNotifications.has(notificationKey)) {
             // Mark this notification as sent
             auctionEndNotifications.add(notificationKey);
-            
-            // Only now notify that the auction status has changed
+
+            // Notify that the auction status has changed
             if (onUpdate) onUpdate(safeData);
           } else {
-            // Already sent notification, don't send again
             console.log(`Suppressing duplicate notification for auction ${auctionId} status: ${safeData.status}`);
-            return; // Skip calling onUpdate to prevent duplicate notifications
           }
-        } 
+        }
         // Also create a notification key for time-based ending
         else if (safeData.endTime) {
           let endTime;
           try {
-            endTime = typeof safeData.endTime.toDate === 'function' ? 
-                      safeData.endTime.toDate() : 
+            endTime = typeof safeData.endTime.toDate === 'function' ?
+                      safeData.endTime.toDate() :
                       new Date(safeData.endTime);
           } catch (dateError) {
             console.error('Error converting endTime to Date:', dateError);
             endTime = new Date(Date.now() + 3600000); // Default 1 hour from now
           }
-                        
+
           // Check if auction has ended by time
           const now = getCorrectedNow();
           if (endTime <= now) {
@@ -468,7 +471,6 @@ export const setupAuctionEventListeners = (auctionId, onUpdate, onBidPlaced, onE
               if (onUpdate) onUpdate(safeData);
             } else {
               console.log(`Suppressing duplicate time-end notification for auction ${auctionId}`);
-              return; // Skip calling onUpdate to prevent duplicate notifications
             }
           } else {
             // Normal update for active auction
@@ -478,29 +480,26 @@ export const setupAuctionEventListeners = (auctionId, onUpdate, onBidPlaced, onE
           // Normal update for active auction
           if (onUpdate) onUpdate(safeData);
         }
-        
-        // Check if this is a bid update
-        if (onBidPlaced) {
-          // We can detect new bids by checking timestamp or bid count changes
-          // For now, we'll just call onBidPlaced with the updated auction
-          onBidPlaced(safeData);
-        }
-      },
-      { 
-        errorHandler: (error) => {
-          console.error(`Error in auction listener for ${auctionId}:`, error);
-          if (onError) onError(error);
-        },
-        forceRefresh: false // Don't force refresh to reduce database reads
+
+        // Note: Bid updates are handled by ConsolidatedBidService (FCM) - Phase 1 complete
+        // onBidPlaced callback is deprecated in favor of FCM push notifications
+
+      } catch (error) {
+        console.error(`Error loading auction ${auctionId}:`, error);
+        if (onError) onError(error);
       }
-    );
-    
-    // Store unsubscribe function
-    auctionEventListeners.set(auctionId, unsubscribe);
-    
-    return unsubscribe;
+    };
+
+    // Load initial data
+    await loadAuctionData();
+
+    // Return cleanup function (no listener to cleanup, but keep API compatible)
+    return () => {
+      console.log(`Cleanup called for auction ${auctionId} (no listener to remove)`);
+    };
+
   } catch (error) {
-    console.error(`Error setting up auction listeners for ${auctionId}:`, error);
+    console.error(`Error setting up auction data load for ${auctionId}:`, error);
     if (onError) onError(error);
     return () => {};
   }

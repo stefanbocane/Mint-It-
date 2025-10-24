@@ -1,15 +1,14 @@
 import { useFocusEffect } from '@react-navigation/native';
-import { doc, getDoc } from 'firebase/firestore';
+// 🚀 TRACKED: Automatic read monitoring
 import { useCallback, useEffect, useState } from 'react';
 import { ActivityIndicator, ScrollView, StyleSheet, View } from 'react-native';
 import { Button, Text, useTheme } from 'react-native-paper';
 import ProfileLevelSection from '../components/ProfileLevelSection';
 import ProfileShowcaseSection from '../components/ProfileShowcaseSection';
 import ScreenBackground from '../components/ScreenBackground';
-import { db } from '../config/firebase';
-import { useAuth } from '../contexts/AuthContext';
-import { useGroup } from '../contexts/GroupContext';
-import { useUnifiedUserData } from '../contexts/UnifiedUserDataContext';
+import { useAuth } from '../contexts/AuthContextSupabase';
+import { useGroup } from '../contexts/GroupContextSupabase';
+import { useUnifiedUserData } from '../contexts/UnifiedUserDataContextSupabase';
 import CacheService from '../services/caching/CacheService';
 import { getCachedUserCards } from '../utils/firestoreUtils';
 
@@ -54,15 +53,13 @@ const ProfileScreen = ({ route, navigation }) => {
     // For other users, fetch their data from database
     try {
       console.log('ProfileScreen: Fetching other user data for:', userId);
-      // STEP 3.F.1: Use enhanced cache-aside pattern for user profiles
-      const otherUserData = await CacheService.getUserProfileCacheAside(
-        userId, 
-        () => getDoc(doc(db, 'users', userId))
-      );
+      // STEP 3.F.1: Use GlobalUserProfileCache for user profiles
+      const GlobalUserProfileCache = require('../services/GlobalUserProfileCache').default;
+      const otherUserData = await GlobalUserProfileCache.getProfile(userId);
 
       if (otherUserData) {
-        setProfileUserData({ id: userId, ...otherUserData });
-        console.log('ProfileScreen: Loaded other user data:', {
+        setProfileUserData(otherUserData);
+        console.log('ProfileScreen: Loaded other user data via GlobalUserProfileCache:', {
           id: userId,
           username: otherUserData.username,
           displayName: otherUserData.displayName

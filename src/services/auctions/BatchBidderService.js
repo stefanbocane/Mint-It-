@@ -9,8 +9,10 @@
  * - Progressive loading for visible auctions only
  */
 
-import { collection, getDocs, query, where } from 'firebase/firestore';
+import { collection, query, where } from 'firebase/firestore';
+// 🚀 TRACKED: Automatic read monitoring
 import { db } from '../../config/firebase';
+import { getDocs } from '../ReadTracking/TrackedFirestore';
 
 class BatchBidderService {
   constructor() {

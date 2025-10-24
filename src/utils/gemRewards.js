@@ -1,4 +1,5 @@
-import { deleteField, doc, getDoc, serverTimestamp, updateDoc } from 'firebase/firestore';
+import { deleteField, doc, serverTimestamp, updateDoc } from 'firebase/firestore';
+// 🚀 TRACKED: Automatic read monitoring
 import { db } from '../config/firebase';
 import { updateGems } from './gemOperations';
 
@@ -46,15 +47,15 @@ const getTodayDateString = () => {
 export const getDailyAchievements = async (userId) => {
   try {
     console.log(`🔍 Fetching daily achievements for user: ${userId}`);
-    const userRef = doc(db, 'users', userId);
-    const userDoc = await getDoc(userRef);
     
-    if (!userDoc.exists()) {
+    // Use GlobalUserProfileCache instead of direct fetch
+    const GlobalUserProfileCache = require('../services/GlobalUserProfileCache').default;
+    const userData = await GlobalUserProfileCache.getProfile(userId);
+    
+    if (!userData) {
       console.error('❌ User not found:', userId);
       return null;
     }
-    
-    const userData = userDoc.data();
     const dailyCompletionTimestamps = userData.dailyAchievements || {};
     
     // NEW: Use daily-based claimed tracking instead of persistent array
@@ -129,15 +130,14 @@ export const recordAchievement = async (userId, achievementType) => {
   }
   
   try {
-    const userRef = doc(db, 'users', userId);
-    const userDoc = await getDoc(userRef);
+    // Use GlobalUserProfileCache instead of direct fetch
+    const GlobalUserProfileCache = require('../services/GlobalUserProfileCache').default;
+    const userData = await GlobalUserProfileCache.getProfile(userId);
     
-    if (!userDoc.exists()) {
+    if (!userData) {
       console.error('User document does not exist:', userId);
       return false;
     }
-    
-    const userData = userDoc.data();
     const achievements = userData.dailyAchievements || {};
     const now = serverTimestamp();
     
@@ -149,10 +149,14 @@ export const recordAchievement = async (userId, achievementType) => {
       console.log(`Recording new achievement: ${achievementType}`);
       
       try {
+        const userRef = doc(db, 'users', userId);
         await updateDoc(userRef, {
           [`dailyAchievements.${achievementType}`]: now,
           lastUpdated: now
         });
+        
+        // Invalidate cache after update
+        GlobalUserProfileCache.invalidate(userId);
         
         console.log('Achievement recorded successfully');
         return true;
@@ -229,10 +233,10 @@ export const claimGemRewards = async (userId, groupId) => {
     const userRef = doc(db, 'users', userId);
     
     try {
-      // Get current daily claimed achievements
-      const userDoc = await getDoc(userRef);
-      const userData = userDoc.data();
-      const dailyClaimedAchievements = userData.dailyClaimedAchievements || {};
+      // Get current daily claimed achievements using GlobalUserProfileCache
+      const GlobalUserProfileCache = require('../services/GlobalUserProfileCache').default;
+      const userData = await GlobalUserProfileCache.getProfile(userId);
+      const dailyClaimedAchievements = userData?.dailyClaimedAchievements || {};
       const currentClaimedToday = dailyClaimedAchievements[todayDateString] || [];
       
       // Add new claimed achievements to today's list
@@ -276,13 +280,15 @@ export const forceResetGemRewards = async (userId) => {
     console.log(`🔧 Force resetting gem rewards for user: ${userId}`);
     
     const userRef = doc(db, 'users', userId);
-    const userDoc = await getDoc(userRef);
     
-    if (!userDoc.exists()) {
+    // Use GlobalUserProfileCache instead of direct fetch
+    const GlobalUserProfileCache = require('../services/GlobalUserProfileCache').default;
+    const userData = await GlobalUserProfileCache.getProfile(userId);
+    
+    if (!userData) {
       return { success: false, message: 'User not found' };
     }
     
-    const userData = userDoc.data();
     const todayDateString = getTodayDateString();
     
     // Prepare update to remove old data and reset today's claims
@@ -321,11 +327,13 @@ export const forceResetGemRewards = async (userId) => {
 export const cleanupOldClaimedAchievements = async (userId, daysToKeep = 30) => {
   try {
     const userRef = doc(db, 'users', userId);
-    const userDoc = await getDoc(userRef);
     
-    if (!userDoc.exists()) return;
+    // Use GlobalUserProfileCache instead of direct fetch
+    const GlobalUserProfileCache = require('../services/GlobalUserProfileCache').default;
+    const userData = await GlobalUserProfileCache.getProfile(userId);
     
-    const userData = userDoc.data();
+    if (!userData) return;
+    
     const dailyClaimedAchievements = userData.dailyClaimedAchievements || {};
     
     const cutoffDate = new Date();

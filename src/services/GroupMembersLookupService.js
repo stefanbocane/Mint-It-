@@ -1,5 +1,4 @@
-import { collection, doc, getDocs, query, serverTimestamp, setDoc, where } from 'firebase/firestore';
-import { db } from '../config/firebase';
+import { supabase } from '../config/supabase';
 import CacheService from './caching/CacheService';
 
 /**
@@ -23,53 +22,71 @@ class GroupMembersLookupService {
    */
   static async getGroupMembers(groupId, options = {}) {
     const cacheKey = `group_members_${groupId}`;
-    
+
     try {
       return await CacheService.getOrSet(cacheKey, async () => {
-        console.log(`[GroupMembersLookupService] Cache miss for group ${groupId}, fetching from Firestore`);
-        
-        // Check for existing denormalized data first
-        const denormalizedData = await CacheService.getDocument('groupMembers', groupId, {
-          ttl: this.CACHE_TTL.MEMBERS,
-          fallback: null
-        });
-        
-        if (denormalizedData && denormalizedData.members && 
-            Date.now() - denormalizedData.lastUpdated < this.CACHE_TTL.MEMBERS) {
-          console.log(`[GroupMembersLookupService] Using denormalized data for group ${groupId}`);
-          return denormalizedData.memberData || denormalizedData.members;
+        console.log(`[GroupMembersLookupService] Cache miss for group ${groupId}, fetching from Supabase`);
+
+        // Get group and its members array from Supabase
+        const { data: groupData, error: groupError } = await supabase
+          .from('groups')
+          .select('members')
+          .eq('id', groupId)
+          .single();
+
+        if (groupError) {
+          console.error(`[GroupMembersLookupService] Error fetching group:`, groupError);
+          throw groupError;
         }
-        
-        // Fallback to array-contains query if no cached data
-        console.log(`[GroupMembersLookupService] Performing array-contains query for group ${groupId}`);
-        const usersRef = collection(db, 'users');
-        const q = query(usersRef, where('groups', 'array-contains', groupId));
-        const snapshot = await getDocs(q);
-        
-        const members = snapshot.docs.map(doc => ({ 
-          id: doc.id, 
-          ...doc.data(),
+
+        const memberIds = groupData?.members || [];
+
+        if (memberIds.length === 0) {
+          console.log(`[GroupMembersLookupService] No members in group ${groupId}`);
+          return [];
+        }
+
+        // Fetch user profiles for all members
+        const { data: users, error: usersError } = await supabase
+          .from('users')
+          .select('id, username, display_name, email, avatar_url, gems, xp, level')
+          .in('id', memberIds);
+
+        if (usersError) {
+          console.error(`[GroupMembersLookupService] Error fetching users:`, usersError);
+          throw usersError;
+        }
+
+        const members = (users || []).map(user => ({
+          id: user.id,
+          uid: user.id, // For backwards compatibility
+          username: user.username,
+          displayName: user.display_name || user.username,
+          email: user.email,
+          profilePicture: user.avatar_url,
+          gems: user.gems,
+          xp: user.xp,
+          level: user.level,
           lastFetched: Date.now()
         }));
-        
-        // Store denormalized data for future queries
-        await this.storeDenormalizedMembers(groupId, members);
-        
+
+        console.log(`[GroupMembersLookupService] Fetched ${members.length} members for group ${groupId}`);
+
         return members;
-      }, { 
+      }, {
         ttl: this.CACHE_TTL.MEMBERS,
-        ...options 
+        ...options
       });
     } catch (error) {
       console.error(`[GroupMembersLookupService] Error fetching group members for ${groupId}:`, error);
-      
+
       // Return cached data even if stale on error
       const staleData = await CacheService.getValue(cacheKey);
       if (staleData) {
         console.warn(`[GroupMembersLookupService] Returning stale data for group ${groupId}`);
         return staleData;
       }
-      
+
       throw error;
     }
   }
@@ -147,32 +164,12 @@ class GroupMembersLookupService {
    * Store denormalized member data for future optimization
    * @param {string} groupId - The group ID
    * @param {Array} members - Member data array
+   * @deprecated No longer needed with Supabase - data is already normalized
    */
   static async storeDenormalizedMembers(groupId, members) {
-    try {
-      const denormalizedData = {
-        groupId,
-        members: members.map(m => m.id),
-        memberData: members,
-        lastUpdated: Date.now(),
-        memberCount: members.length
-      };
-      
-      // Store in Firestore for persistence across app sessions
-      await setDoc(doc(db, 'groupMembers', groupId), {
-        ...denormalizedData,
-        lastUpdated: serverTimestamp()
-      });
-      
-      // Also cache in memory for immediate access
-      await CacheService.setValue(`group_members_${groupId}`, members, {
-        ttl: this.CACHE_TTL.MEMBERS
-      });
-      
-      console.log(`[GroupMembersLookupService] Stored denormalized data for group ${groupId} with ${members.length} members`);
-    } catch (error) {
-      console.error(`[GroupMembersLookupService] Error storing denormalized data for group ${groupId}:`, error);
-    }
+    // No-op: Supabase stores members in normalized tables
+    // Data is cached in CacheService automatically via getOrSet
+    console.log(`[GroupMembersLookupService] storeDenormalizedMembers called (no-op for Supabase)`);
   }
 
   /**

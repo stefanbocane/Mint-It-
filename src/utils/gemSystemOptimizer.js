@@ -5,9 +5,11 @@
  * Ensures consistency between daily rewards, set completion, level ups, and displays
  */
 
-import { doc, getDoc, updateDoc } from 'firebase/firestore';
+import { doc, updateDoc } from 'firebase/firestore';
+// 🚀 TRACKED: Automatic read monitoring
 import { db } from '../config/firebase';
 import CacheService from '../services/caching/CacheService';
+import { getDoc } from '../services/ReadTracking/TrackedFirestore';
 import { getGems, updateGems } from './gemOperations';
 import { getDailyAchievements } from './gemRewards';
 
@@ -43,8 +45,7 @@ export const performGemSystemHealthCheck = async (userId, groupId = null) => {
   try {
     // 1. Check user document existence
     console.log('📋 Checking user document...');
-    const userRef = doc(db, 'users', userId);
-    const userDoc = await getDoc(userRef);
+    const userDoc = await getDoc(doc(db, 'users', userId, 'sessions', 'main'));
     
     if (!userDoc.exists()) {
       healthReport.errors.push('User document does not exist');
@@ -281,8 +282,7 @@ export const generateGemSystemReport = async (userId, groupId = null) => {
     report.sections.consistency = await ensureGemDisplayConsistency(userId, groupId);
     
     // Current balances
-    const userRef = doc(db, 'users', userId);
-    const userDoc = await getDoc(userRef);
+    const userDoc = await getDoc(doc(db, 'users', userId, 'sessions', 'main'));
     
     if (userDoc.exists()) {
       const userData = userDoc.data();
@@ -328,7 +328,7 @@ export const recoverLostGemsFromFailedPurchases = async (userId, groupId = null)
   
   try {
     // Get current user data
-    const userDoc = await getDoc(doc(db, 'users', userId));
+    const userDoc = await getDoc(doc(db, 'users', userId, 'sessions', 'main'));
     if (!userDoc.exists()) {
       return { success: false, error: 'User document not found' };
     }

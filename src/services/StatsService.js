@@ -1,4 +1,6 @@
-import { doc, increment, runTransaction, serverTimestamp, setDoc, updateDoc } from 'firebase/firestore';
+import { doc, increment, serverTimestamp, setDoc, updateDoc } from 'firebase/firestore';
+import { runTransaction } from './ReadTracking/TrackedFirestore';
+// 🚀 TRACKED: Automatic read monitoring (reads handled via CacheService)
 import { db } from '../config/firebase';
 import CacheService from './caching/CacheService';
 

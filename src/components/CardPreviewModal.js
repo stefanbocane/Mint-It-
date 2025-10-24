@@ -1,25 +1,26 @@
 import {
-  Alert,
-  Dimensions,
-  Platform,
-  ScrollView,
-  StyleSheet,
-  Text,
-  ToastAndroid,
-  TouchableWithoutFeedback,
-  View
+    Alert,
+    Dimensions,
+    Platform,
+    ScrollView,
+    StyleSheet,
+    Text,
+    ToastAndroid,
+    TouchableWithoutFeedback,
+    View
 } from 'react-native';
 import { Button, Divider, Portal } from 'react-native-paper';
 
 import { useNavigation } from '@react-navigation/native';
 import * as FileSystem from 'expo-file-system';
 import * as MediaLibrary from 'expo-media-library';
-import { deleteDoc, doc } from 'firebase/firestore';
 import { useState } from 'react';
-import { db } from '../config/firebase';
+import { supabase } from '../config/supabase';
+import { useAuth } from '../contexts/AuthContextSupabase';
+import { clearCollectionCache } from '../hooks/useSimpleCollectionData';
 import { useCardAnimations } from '../hooks/useCardAnimations';
 import { BORDER_OPTIONS, getBorderAnimationStyle } from '../utils/borderOptions';
-import { canUserOwnCard, getCardRestrictionMessage, isCardDownloadable } from '../utils/cardUtils';
+import { getCardRestrictionMessage, isCardDownloadable } from '../utils/cardUtils';
 import { RARITY_COLORS, getDownloadPrice } from '../utils/rarity';
 import CreateAuctionModal from './auction/CreateAuctionModal';
 import SimpleCardImage from './SimpleCardImage';
@@ -30,10 +31,10 @@ const getSellPrice = (rarity) => {
   const rarityPrices = {
     'common': 2,
     'uncommon': 5,
-    'rare': 15,
-    'epic': 25,
-    'legendary': 50,
-    'mythic': 100
+    'rare': 10,
+    'epic': 15,
+    'legendary': 20,
+    'mythic': 25
   };
   return rarityPrices[rarity?.toLowerCase()] || 10;
 };
@@ -52,14 +53,14 @@ const CardPreviewModal = ({
   handleError
 }) => {
   const navigation = useNavigation();
+  const { user } = useAuth();
   const { animations, startExitAnimation } = useCardAnimations();
   const [imageLoading, setImageLoading] = useState(true);
   const [imageError, setImageError] = useState(false);
   const [createAuctionVisible, setCreateAuctionVisible] = useState(false);
 
-  // Check if card can be owned
-  const cardOwnershipStatus = canUserOwnCard(card, { uid: 'user' }); // Will be replaced by actual user context
-  const canOwnCard = cardOwnershipStatus.canOwn && isCardDownloadable(card);
+  // A card is ownable if it is marked available (not in trade/auction) and the image is downloadable.
+  const canOwnCard = card && (!card.inTrade && !card.inAuction && (card.status === 'available' || !card.status)) && isCardDownloadable(card);
 
   const getBorderStyle = (borderType) => {
     if (!borderType || borderType === 'default') {
@@ -191,17 +192,14 @@ const CardPreviewModal = ({
 
   const ownCard = async () => {
     try {
-      // Check if card can be owned before proceeding
+      // Guard only on downloadable / available status; message otherwise
       if (!canOwnCard) {
-        Alert.alert(
-          'Card Not Available',
-          getCardRestrictionMessage(card) || 'This card cannot be owned at the moment.',
-          [{ text: 'OK' }]
-        );
+        Alert.alert('Card Not Available', 'This card cannot be owned at the moment.', [{ text: 'OK' }]);
         return;
       }
 
       const coinReward = getSellPrice(card.rarity);
+      
       Alert.alert(
         'Own Card',
         `Download this ${card.rarity} card to your camera roll and receive ${coinReward} coins? This will remove the card from the collection.`,
@@ -232,10 +230,52 @@ const CardPreviewModal = ({
                   await MediaLibrary.createAlbumAsync('Cardmates', asset, false);
                   
                   const addResult = await addCoins(coinReward);
-                  
+
                   if (addResult) {
-                    await deleteDoc(doc(db, 'cards', card.id));
-                    
+                    // First, check if there's an auction referencing this card
+                    const { data: auctions, error: auctionCheckError } = await supabase
+                      .from('auctions')
+                      .select('id, status')
+                      .eq('card_id', card.id);
+
+                    if (auctionCheckError) {
+                      console.error('Error checking auctions:', auctionCheckError);
+                    }
+
+                    // Delete any completed auctions referencing this card
+                    if (auctions && auctions.length > 0) {
+                      console.log(`Deleting ${auctions.length} auction(s) referencing card ${card.id}`);
+                      const { error: deleteAuctionsError } = await supabase
+                        .from('auctions')
+                        .delete()
+                        .eq('card_id', card.id);
+
+                      if (deleteAuctionsError) {
+                        console.error('Error deleting auctions:', deleteAuctionsError);
+                        Alert.alert('Error', 'Failed to delete associated auctions. Please try again.');
+                        setDownloadingCard(false);
+                        return;
+                      }
+                    }
+
+                    // Now delete the card from the database
+                    const { error: deleteError } = await supabase
+                      .from('cards')
+                      .delete()
+                      .eq('id', card.id);
+
+                    if (deleteError) {
+                      console.error('Error deleting card:', deleteError);
+                      Alert.alert('Error', 'Failed to delete card from database. Please try again.');
+                      setDownloadingCard(false);
+                      return;
+                    }
+
+                    console.log(`✅ Card ${card.id} deleted from database`);
+
+                    // Clear collection cache so card disappears immediately
+                    clearCollectionCache();
+
                     if (Platform.OS === 'android') {
                       ToastAndroid.show(`Card saved and ${coinReward} coins added!`, ToastAndroid.SHORT);
                     } else {
@@ -363,99 +403,77 @@ const CardPreviewModal = ({
                     )}
                   </View>
                   
-                  {/* Action Buttons */}
-                  <View style={styles.previewActions}>
-                    {(!card.inTrade && !card.inAuction) && (
-                      <>
-                        {/* Only show trade and auction buttons for downloadable cards */}
-                        {canOwnCard && (
-                          <View style={styles.actionsRow}>
-                            <Button 
-                              mode="contained" 
-                              style={styles.actionButton}
-                              contentStyle={styles.compactButtonContent}
-                              labelStyle={styles.compactButtonLabel}
-                              onPress={() => {
-                                handleClose();
-                                // Navigate to Trades tab, then to CreateTrade screen
-                                navigation.navigate('Trades', {
-                                  screen: 'CreateTrade',
-                                  params: { initialCardId: card.id }
-                                });
-                              }}
-                              icon="swap-horizontal"
-                            >
-                              Trade
-                            </Button>
-                            
-                            <Button 
-                              mode="contained" 
-                              style={styles.actionButton}
-                              contentStyle={styles.compactButtonContent}
-                              labelStyle={styles.compactButtonLabel}
-                              onPress={openCreateAuction}
-                              icon="gavel"
-                            >
-                              Auction
-                            </Button>
-                          </View>
-                        )}
-                        
-                        {/* Own Card button - only for downloadable cards */}
-                        {canOwnCard ? (
-                          <Button 
-                            mode="contained" 
-                            style={styles.actionButton}
-                            contentStyle={styles.ownButtonContent}
-                            labelStyle={styles.ownButtonLabel}
-                            onPress={ownCard}
-                            loading={downloadingCard}
-                            disabled={downloadingCard}
-                            icon="currency-usd"
-                          >
-                            Own (+{getSellPrice(card.rarity)})
-                          </Button>
-                        ) : null}
-                      </>
-                    )}
-                    
-                    {(card.inTrade || card.inAuction) && (
-                      isCardDownloadable(card) ? (
+                  {/* Action Buttons - Show for available cards */}
+                  {(!card.inTrade && !card.inAuction && (card.status === 'available' || !card.status)) && (
+                    <View style={styles.previewActions}>
+                      {/* Trade and Auction buttons - available for all users */}
+                      <View style={styles.actionsRow}>
                         <Button 
                           mode="contained" 
-                          onPress={downloadCardToDevice}
-                          loading={downloadingCard}
-                          disabled={downloadingCard}
-                          icon="download"
                           style={styles.actionButton}
+                          contentStyle={styles.compactButtonContent}
+                          labelStyle={styles.compactButtonLabel}
+                          onPress={() => {
+                            handleClose();
+                            navigation.navigate('Trades', {
+                              screen: 'CreateTrade',
+                              params: { initialCardId: card.id }
+                            });
+                          }}
+                          icon="swap-horizontal"
                         >
-                          Download ({getDownloadPrice(card.rarity)} coins)
+                          Trade
                         </Button>
-                      ) : null
-                    )}
-                    
-                    {isUserAdmin && (
-                      <Button 
-                        mode="contained" 
-                        style={[styles.actionButton, styles.deleteButton]}
-                        onPress={() => {
-                          handleClose();
-                          onCardDeleted(card.id, 'delete');
-                        }}
-                        icon="delete"
+                        
+                        <Button 
+                          mode="contained" 
+                          style={styles.actionButton}
+                          contentStyle={styles.compactButtonContent}
+                          labelStyle={styles.compactButtonLabel}
+                          onPress={openCreateAuction}
+                          icon="gavel"
+                        >
+                          Auction
+                        </Button>
+                      </View>
+
+                      {/* Own button - available for all users on available cards */}
+                      <Button
+                        mode="contained"
+                        style={styles.actionButton}
+                        contentStyle={styles.ownButtonContent}
+                        labelStyle={styles.ownButtonLabel}
+                        onPress={ownCard}
+                        disabled={downloadingCard}
+                        loading={downloadingCard}
+                        icon="download"
                       >
-                        Delete Card
+                        Own (+{getSellPrice(card.rarity)})
                       </Button>
-                    )}
-                    
+                    </View>
+                  )}
+                  
+                  {isUserAdmin && (
                     <Button 
-                      mode="text" 
-                      onPress={handleClose}
-                      style={{ marginTop: 8 }}
+                      mode="contained" 
+                      style={[styles.actionButton, styles.deleteButton]}
+                      onPress={() => {
+                        handleClose();
+                        onCardDeleted(card.id, 'delete');
+                      }}
+                      icon="delete"
                     >
-                      Close
+                      Delete Card
                     </Button>
-                  </View>
+                  )}
+                  
+                  <Button 
+                    mode="text" 
+                    onPress={handleClose}
+                    style={{ marginTop: 8 }}
+                  >
+                    Close
+                  </Button>
                 </ScrollView>
               </View>
             </View>
@@ -611,4 +629,4 @@ const styles = StyleSheet.create({
   },
 });
 
-export default CardPreviewModal; 
+export default CardPreviewModal;

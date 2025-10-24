@@ -4,9 +4,11 @@
  * Reduces read operations by 60-80% through intelligent filtering and caching
  */
 
-import { collection, getDocs, onSnapshot, query, where } from 'firebase/firestore';
+import { collection, query, where } from 'firebase/firestore';
+// 🚀 TRACKED: Automatic read monitoring
 import { db } from '../config/firebase';
 import CacheService from '../services/caching/CacheService';
+import { getDocs, onSnapshot } from '../services/ReadTracking/TrackedFirestore';
 
 // Global flag: disable real-time listeners (overview docs used instead)
 const REALTIME_COLLECTION_LISTENERS = false;

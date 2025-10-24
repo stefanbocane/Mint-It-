@@ -1,30 +1,31 @@
 import { useNavigation, useRoute } from '@react-navigation/native';
-import { deleteDoc, doc, getDoc, updateDoc } from 'firebase/firestore';
 import { useEffect, useState } from 'react';
 import { Alert, ScrollView, StyleSheet, View } from 'react-native';
-import { ActivityIndicator, Button, Card, Divider, Text, useTheme } from 'react-native-paper';
+import { ActivityIndicator, Button, Card, Divider, Text } from 'react-native-paper';
 import ScreenBackground from '../components/ScreenBackground';
-import { db } from '../config/firebase';
-import { useAuth } from '../contexts/AuthContext';
-import { useGroup } from '../contexts/GroupContext';
+import { useAuth } from '../contexts/AuthContextSupabase';
+import { useGroup } from '../contexts/GroupContextSupabase';
 import { useStats } from '../contexts/StatsContext';
+import { useTheme } from '../contexts/ThemeContext';
 import { awardTradeXP, getTradesCompletedToday } from '../services/XPService';
-import { batchedUpdateDoc } from '../utils/enhancedBatchOperations';
 import { ACHIEVEMENT_TYPES, recordAchievement } from '../utils/gemRewards';
+import { setPayload as cachePayload, getPayload as getCachedPayload } from '../utils/GlobalPayloadCache';
 
 const TradeDetailsScreen = () => {
-  const theme = useTheme();
   const navigation = useNavigation();
   const route = useRoute();
   const { tradeId } = route.params || {};
   const { user } = useAuth();
   const { currentGroup } = useGroup();
   const { recordTradeComplete } = useStats();
-  const [trade, setTrade] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const { theme } = useTheme();
+  const cached = getCachedPayload(tradeId);
+  const [trade, setTrade] = useState(cached);
+  const [loading, setLoading] = useState(true); // Always load initially to get card details
   const [processing, setProcessing] = useState(false);
 
   useEffect(() => {
+    // Always fetch trade details to ensure we have complete card information
     fetchTradeDetails();
   }, [tradeId]);
 
@@ -36,56 +37,91 @@ const TradeDetailsScreen = () => {
 
     try {
       setLoading(true);
-      const tradeRef = doc(db, 'trades', tradeId);
-      const tradeDoc = await getDoc(tradeRef);
+      const { supabase } = await import('../config/supabase');
+      const currentUserId = user?.id || user?.uid;
 
-      if (!tradeDoc.exists()) {
+      // Fetch trade from Supabase
+      const { data: tradeData, error: tradeError } = await supabase
+        .from('trades')
+        .select('*')
+        .eq('id', tradeId)
+        .single();
+
+      if (tradeError || !tradeData) {
+        console.error('Trade not found:', tradeError);
         Alert.alert('Error', 'Trade not found');
         navigation.goBack();
         return;
       }
 
-      const tradeData = tradeDoc.data();
-      
-      // Collect all document IDs we need to fetch
-      const userIds = [tradeData.senderId, tradeData.receiverId].filter(Boolean);
-      const cardIds = [...(tradeData.offeredCards || []), ...(tradeData.requestedCards || [])];
-      
-      // Batch fetch users and cards
-      const [usersMap, cardsMap] = await Promise.all([
-        // Use CacheService for batch user fetching
-        import('../services/caching/CacheService').then(({ default: CacheService }) => 
-          CacheService.getDocuments('users', userIds).then(users => 
-            new Map(users.map(user => [user.id, user]))
-          )
-        ),
-        // Use CacheService for batch card fetching
-        import('../services/caching/CacheService').then(({ default: CacheService }) => 
-          CacheService.getDocuments('cards', cardIds).then(cards => 
-            new Map(cards.map(card => [card.id, card]))
-          )
-        )
-      ]);
+      // Fetch cards for this trade
+      const cardIds = [...(tradeData.offered_cards || []), ...(tradeData.requested_cards || [])];
+      console.log('Fetching cards for trade:', { cardIds, offeredCards: tradeData.offered_cards, requestedCards: tradeData.requested_cards });
+
+      let cardsMap = new Map();
+      if (cardIds.length > 0) {
+        const { data: cards, error: cardsError } = await supabase
+          .from('cards')
+          .select('id, name, image_url, rarity, owner_id')
+          .in('id', cardIds);
+
+        console.log('Fetched cards from Supabase:', { cards, error: cardsError });
+
+        if (!cardsError && cards) {
+          cardsMap = new Map(cards.map(card => [
+            card.id,
+            {
+              id: card.id,
+              name: card.name,
+              imageUrl: card.image_url,
+              rarity: card.rarity,
+              ownerId: card.owner_id
+            }
+          ]));
+        }
+      }
 
       // Build offered and requested cards arrays
-      const offeredCards = (tradeData.offeredCards || [])
-        .map(cardId => cardsMap.get(cardId))
-        .filter(Boolean);
-        
-      const requestedCards = (tradeData.requestedCards || [])
+      const offeredCards = (tradeData.offered_cards || [])
         .map(cardId => cardsMap.get(cardId))
         .filter(Boolean);
 
-      setTrade({
-        id: tradeDoc.id,
-        ...tradeData,
-        senderName: usersMap.get(tradeData.senderId)?.username || 'Unknown User',
-        receiverName: usersMap.get(tradeData.receiverId)?.username || 'Unknown User',
+      const requestedCards = (tradeData.requested_cards || [])
+        .map(cardId => cardsMap.get(cardId))
+        .filter(Boolean);
+
+      console.log('Built card arrays:', { offeredCards, requestedCards });
+
+      const built = {
+        id: tradeData.id,
+        senderId: tradeData.sender_id,
+        receiverId: tradeData.receiver_id,
+        senderName: tradeData.sender_name || 'Unknown User',
+        receiverName: tradeData.receiver_name || 'Unknown User',
+        senderAvatar: tradeData.sender_avatar,
+        receiverAvatar: tradeData.receiver_avatar,
+        offeredCards: tradeData.offered_cards || [],
+        requestedCards: tradeData.requested_cards || [],
         offeredCardsDetails: offeredCards,
         requestedCardsDetails: requestedCards,
-        isSender: tradeData.senderId === user.uid,
-        isReceiver: tradeData.receiverId === user.uid,
+        groupId: tradeData.group_id,
+        status: tradeData.status,
+        timestamp: tradeData.created_at,
+        isSender: tradeData.sender_id === currentUserId,
+        isReceiver: tradeData.receiver_id === currentUserId,
+      };
+
+      console.log('Trade details built:', {
+        status: built.status,
+        isSender: built.isSender,
+        isReceiver: built.isReceiver,
+        senderId: built.senderId,
+        receiverId: built.receiverId,
+        currentUserId
       });
+
+      setTrade(built);
+      cachePayload(tradeId, built);
     } catch (error) {
       console.error('Error fetching trade details:', error);
       Alert.alert('Error', 'Failed to load trade details');
@@ -96,13 +132,40 @@ const TradeDetailsScreen = () => {
 
   const handleAcceptTrade = async () => {
     if (!trade || processing) return;
-    
+
     setProcessing(true);
     const raritiesTraded = {};
     try {
-      // Update trade status
-      await updateDoc(doc(db, 'trades', trade.id), {
-        status: 'completed',
+      const { supabase } = await import('../config/supabase');
+
+      // Use Supabase function to accept trade (bypasses RLS)
+      console.log('🔄 Calling accept_trade function for trade:', trade.id);
+      const { data: result, error: functionError } = await supabase
+        .rpc('accept_trade', { trade_id_param: trade.id });
+
+      console.log('Accept trade result:', result);
+
+      if (functionError) {
+        console.error('Function error:', functionError);
+        throw functionError;
+      }
+
+      if (!result?.success) {
+        throw new Error(result?.error || 'Failed to accept trade');
+      }
+
+      console.log(`✅ Trade accepted! Transferred ${result.cards_transferred} cards`);
+
+      // Track rarities for stats
+      (trade.offeredCardsDetails || []).forEach(card => {
+        if (card.rarity) {
+          raritiesTraded[card.rarity] = (raritiesTraded[card.rarity] || 0) + 1;
+        }
+      });
+      (trade.requestedCardsDetails || []).forEach(card => {
+        if (card.rarity) {
+          raritiesTraded[card.rarity] = (raritiesTraded[card.rarity] || 0) + 1;
+        }
       });
       
       // Record achievement for first trade of the day for both parties
@@ -139,55 +202,7 @@ const TradeDetailsScreen = () => {
         // Don't fail the trade if achievement recording fails
       }
 
-      // Prepare batch updates for all cards involved in the trade
-      const cardUpdates = [];
-      
-      // Process offered cards (going to receiver)
-      for (const card of trade.offeredCardsDetails) {
-        cardUpdates.push({
-          collection: 'cards',
-          id: card.id,
-          data: {
-            ownerId: trade.receiverId,
-            userId: trade.receiverId,
-            inTrade: false,
-            tradeId: null
-          }
-        });
-        
-        // Track rarity for stats
-        if (card.rarity) {
-          raritiesTraded[card.rarity] = (raritiesTraded[card.rarity] || 0) + 1;
-        }
-      }
-      
-      // Process requested cards (going to sender)
-      for (const card of trade.requestedCardsDetails) {
-        const updateData = {
-          inTrade: false,
-          tradeId: null
-        };
-        
-        // Only add properties if they're not undefined
-        if (trade.senderId) {
-          updateData.ownerId = trade.senderId;
-          updateData.userId = trade.senderId;
-        }
-        
-        cardUpdates.push({
-          collection: 'cards',
-          id: card.id,
-          data: updateData
-        });
-        
-        // Track rarity for stats
-        if (card.rarity) {
-          raritiesTraded[card.rarity] = (raritiesTraded[card.rarity] || 0) + 1;
-        }
-      }
-      
-      // Execute all card updates in a single batch operation
-      await batchedUpdateDoc(cardUpdates);
+      // Card transfers already handled by accept_trade function
       
       // Record trade completion in stats for both users
       if (trade.senderId) {
@@ -245,23 +260,28 @@ const TradeDetailsScreen = () => {
 
   const handleDeclineTrade = async () => {
     if (!trade || processing) return;
-    
+
     setProcessing(true);
     try {
-      // Update trade status
-      await updateDoc(doc(db, 'trades', trade.id), {
-        status: 'declined',
-      });
-      
-      // Release cards from trade
-      for (const card of [...trade.offeredCardsDetails, ...trade.requestedCardsDetails]) {
-        const updateData = {
-          inTrade: false,
-          tradeId: null
-        };
-        await updateDoc(doc(db, 'cards', card.id), updateData);
+      const { supabase } = await import('../config/supabase');
+
+      // Use Supabase function to decline trade (bypasses RLS)
+      console.log('🔄 Calling decline_trade function for trade:', trade.id);
+      const { data: result, error: functionError } = await supabase
+        .rpc('decline_trade', { trade_id_param: trade.id });
+
+      console.log('Decline trade result:', result);
+
+      if (functionError) {
+        console.error('Function error:', functionError);
+        throw functionError;
       }
-      
+
+      if (!result?.success) {
+        throw new Error(result?.error || 'Failed to decline trade');
+      }
+
+      console.log('✅ Trade declined successfully');
       Alert.alert('Success', 'Trade declined');
       navigation.goBack();
     } catch (error) {
@@ -274,25 +294,32 @@ const TradeDetailsScreen = () => {
 
   const handleCancelTrade = async () => {
     if (!trade || processing) return;
-    
+
     setProcessing(true);
     try {
-      // Delete the trade
-      await deleteDoc(doc(db, 'trades', trade.id));
-      
-      // Release cards from trade
-      for (const card of [...trade.offeredCardsDetails, ...trade.requestedCardsDetails]) {
-        const updateData = {
-          inTrade: false,
-          tradeId: null
-        };
-        await updateDoc(doc(db, 'cards', card.id), updateData);
+      const { supabase } = await import('../config/supabase');
+
+      // Use Supabase function to cancel trade (bypasses RLS)
+      console.log('🔄 Calling cancel_trade function for trade:', trade.id);
+      const { data: result, error: functionError } = await supabase
+        .rpc('cancel_trade', { trade_id_param: trade.id });
+
+      console.log('Cancel trade result:', result);
+
+      if (functionError) {
+        console.error('Function error:', functionError);
+        throw functionError;
       }
-      
-      Alert.alert('Success', 'Trade cancelled');
+
+      if (!result?.success) {
+        throw new Error(result?.error || 'Failed to cancel trade');
+      }
+
+      console.log('✅ Trade canceled successfully');
+      Alert.alert('Success', 'Trade canceled');
       navigation.goBack();
     } catch (error) {
-      console.error('Error cancelling trade:', error);
+      console.error('Error canceling trade:', error);
       Alert.alert('Error', 'Failed to cancel trade');
     } finally {
       setProcessing(false);
@@ -355,7 +382,7 @@ const TradeDetailsScreen = () => {
             
             <Text style={styles.sectionTitle}>Offered Items</Text>
             <View style={styles.cardsSection}>
-              {trade.offeredCardsDetails.length > 0 ? (
+              {trade.offeredCardsDetails?.length > 0 ? (
                 trade.offeredCardsDetails.map(card => (
                   <Card key={card.id} style={styles.cardItem}>
                     <Card.Cover source={{ uri: card.imageUrl }} style={styles.cardImage} />
@@ -368,12 +395,12 @@ const TradeDetailsScreen = () => {
                 <Text style={styles.noCardsText}>No cards offered</Text>
               )}
             </View>
-            
+
             <Divider style={styles.divider} />
-            
+
             <Text style={styles.sectionTitle}>Requested Items</Text>
             <View style={styles.cardsSection}>
-              {trade.requestedCardsDetails.length > 0 ? (
+              {trade.requestedCardsDetails?.length > 0 ? (
                 trade.requestedCardsDetails.map(card => (
                   <Card key={card.id} style={styles.cardItem}>
                     <Card.Cover source={{ uri: card.imageUrl }} style={styles.cardImage} />
@@ -388,8 +415,8 @@ const TradeDetailsScreen = () => {
             </View>
             
             <Divider style={styles.divider} />
-            
-            {trade.status === 'active' && (
+
+            {(trade.status === 'active' || trade.status === 'pending') && (
               <View style={styles.actionButtons}>
                 {trade.isReceiver && (
                   <>
@@ -510,4 +537,4 @@ const styles = StyleSheet.create({
   },
 });
 
-export default TradeDetailsScreen; 
+export default TradeDetailsScreen;

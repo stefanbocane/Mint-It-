@@ -1,29 +1,27 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { NavigationContainer } from '@react-navigation/native';
-import { getAuth, onAuthStateChanged } from 'firebase/auth';
 import React, { memo, Suspense, useEffect, useMemo, useState } from 'react';
 import { AppState, Text, View } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { Provider as PaperProvider } from 'react-native-paper';
-import { AuthContextProvider } from './src/contexts/AuthContext';
-import { GroupProvider } from './src/contexts/GroupContext';
+import { onAuthStateChange } from './src/config/supabase';
+import { AuthContextProvider } from './src/contexts/AuthContextSupabase';
+import { GroupProvider } from './src/contexts/GroupContextSupabase';
 import { SettingsProvider } from './src/contexts/SettingsContext';
 import { ThemeProvider, useTheme } from './src/contexts/ThemeContext';
-import { UnifiedUserDataProvider } from './src/contexts/UnifiedUserDataContext';
+import { UnifiedUserDataProvider } from './src/contexts/UnifiedUserDataContextSupabase';
 import RootNavigator from './src/navigation/RootNavigator';
-import CacheService from './src/services/caching/CacheService';
+import InitialLoadGate from './src/providers/InitialLoadGate';
 import { handleError } from './src/services/ErrorHandlingService';
 import { setupNotificationListeners } from './src/services/notifications';
-import UnifiedBootstrapService from './src/services/UnifiedBootstrapService';
-import { preWarmCache } from './src/utils/appInitializer';
+import useInitialStore from './src/store/useInitialStore';
 import { startCacheMaintenanceTasks, stopCacheMaintenanceTasks } from './src/utils/cacheMaintenanceUtils';
-import { initializeErrorHandling } from './src/utils/firebaseErrorHandler';
 
 // OPTIMIZED: Import new optimization services
+import AuctionCompletionService from './src/services/AuctionCompletionServiceSupabase';
+import ProductionMonitor from './src/services/monitoring/ProductionMonitor';
 
 const LOADING_BACKGROUND_COLOR = '#f5f5f5';
-
-// Initialize Firebase error handling utilities
-initializeErrorHandling();
 
 // OPTIMIZED: Initialize optimization services
 console.log('🚀 OPTIMIZED: Initializing optimization services...');
@@ -33,27 +31,34 @@ console.log('✅ OPTIMIZED: Optimization services initialized');
 console.log('  - GlobalListenerCoordinator: Ready for consolidated listeners');
 console.log('  - UltraBatchService: Ready for batch operations');
 console.log('  - OptimizedStatusVerificationService: Ready for status verification');
+console.log('  - ProductionMonitor: Ready for read tracking and alerting');
 
 // OPTIMIZED: Unified Data Synchronizer using new bootstrap service
 const DataSynchronizer = memo(() => {
   useEffect(() => {
     // Start cache maintenance tasks only (background cleanup moved to UnifiedBootstrapService)
     startCacheMaintenanceTasks();
-    
+
+    // Start auction completion background service
+    AuctionCompletionService.start();
+
     const subscription = AppState.addEventListener('change', nextAppState => {
       if (nextAppState === 'active') {
         startCacheMaintenanceTasks();
+        AuctionCompletionService.start();
       } else if (nextAppState === 'background') {
         stopCacheMaintenanceTasks();
+        AuctionCompletionService.stop();
       }
     });
-    
+
     return () => {
       stopCacheMaintenanceTasks();
+      AuctionCompletionService.stop();
       subscription.remove();
     };
   }, []);
-  
+
   return null;
 });
 
@@ -106,14 +111,14 @@ const useNavigationTracker = (user, bootData) => {
     if (previousState && currentState) {
       const prevRoute = getActiveRouteName(previousState);
       const currentRoute = getActiveRouteName(currentState);
-      
+
       if (prevRoute !== currentRoute) {
         try {
           // Track navigation with Smart User Patterns Service
           const SmartUserPatternsService = (await import('./src/services/SmartUserPatternsService')).default;
-          
-          // Get user from context if available
-          const userId = user?.uid;
+
+          // Get user from context if available (Supabase uses 'id', Firebase uses 'uid')
+          const userId = user?.id || user?.uid;
           if (userId) {
             await SmartUserPatternsService.trackNavigation(
               userId,
@@ -122,7 +127,7 @@ const useNavigationTracker = (user, bootData) => {
               { timestamp: Date.now(), bootData }
             );
           }
-          
+
           if (__DEV__) {
             console.log(`📍 Navigation tracked: ${prevRoute} → ${currentRoute}`);
           }
@@ -131,7 +136,7 @@ const useNavigationTracker = (user, bootData) => {
         }
       }
     }
-    
+
     setNavigationState(currentState);
   };
   
@@ -139,10 +144,11 @@ const useNavigationTracker = (user, bootData) => {
 };
 
 // Main AppContent component with optimized providers
-const AppContent = memo(({ user, bootData }) => {
+const AppContent = memo(({ user, currentGroup }) => {
+  const bootData = useInitialStore(state => state.payload);
   const { theme } = useTheme();
   const { onNavigationStateChange } = useNavigationTracker(user, bootData);
-  
+
   const paperTheme = useMemo(() => ({
     ...theme,
     colors: {
@@ -153,18 +159,20 @@ const AppContent = memo(({ user, bootData }) => {
   }), [theme]);
 
   return (
-    <PaperProvider theme={paperTheme}>
-      <UnifiedUserDataProvider>
-        <NavigationContainer 
-          theme={paperTheme}
-          onStateChange={onNavigationStateChange}
-        >
-          <DataSynchronizer />
-          <NotificationSetup />
-          <RootNavigator />
-        </NavigationContainer>
-      </UnifiedUserDataProvider>
-    </PaperProvider>
+    <GroupProvider initialGroup={currentGroup}>
+      <PaperProvider theme={paperTheme}>
+        <UnifiedUserDataProvider>
+          <NavigationContainer
+            theme={paperTheme}
+            onStateChange={onNavigationStateChange}
+          >
+            <DataSynchronizer />
+            <NotificationSetup />
+            <RootNavigator />
+          </NavigationContainer>
+        </UnifiedUserDataProvider>
+      </PaperProvider>
+    </GroupProvider>
   );
 });
 
@@ -196,111 +204,79 @@ class ThemeErrorBoundary extends React.Component {
 
 const App = () => {
   const [user, setUser] = useState(null);
+  const [userLoaded, setUserLoaded] = useState(false);
   const [currentGroup, setCurrentGroup] = useState(null);
-  const [bootData, setBootData] = useState(null);
-  
+
   useEffect(() => {
-    const auth = getAuth();
-    
-    const unsubscribe = onAuthStateChanged(auth, async (authUser) => {
+    const unsubscribe = onAuthStateChange(async (event, session) => {
+      const authUser = session?.user || null;
+
       if (authUser) {
         setUser(authUser);
-        
+
+        // 🚀 OPTIMIZED: Initialize ProductionMonitor for this session
+        ProductionMonitor.initialize(authUser.id, {
+          enableSampling: !__DEV__ // Always monitor in dev, sample in production
+        });
+
         try {
-          // UNIFIED BOOTSTRAP FIX: Replace 78 scattered reads with 6 coordinated reads
-          console.log('🚀 Starting unified bootstrap process...');
-          
-          // First get basic user data to find last active group
-          const userData = await CacheService.getDocument('users', authUser.uid, { 
-            ttl: 60 * 1000,
-            fields: ['lastActiveGroup', 'displayName', 'email'] // Field selection optimization
-          });
-          
-          let groupId = userData?.lastActiveGroup;
-          
-          // If user has a last active group, perform unified bootstrap
-          if (groupId) {
-            const unifiedBootData = await UnifiedBootstrapService.performUnifiedBootstrap(
-              authUser.uid, 
-              groupId, 
-              {
-                skipIfRecentlyLoaded: true,
-                prefetchUserCards: true,
-                prefetchActiveAuctions: true,
-                prefetchActiveTrades: false, // Start with minimal prefetching
-                prefetchedUser: userData
-              }
-            );
-            
-            setBootData(unifiedBootData);
-            setCurrentGroup({
-              id: groupId,
-              ...unifiedBootData.group
-            });
-            
-            // Log the optimization results
-            const metrics = UnifiedBootstrapService.getBootMetrics();
-            console.log(`✅ Bootstrap completed: ${metrics.totalReads} reads (saved ${metrics.savedReads} reads)`);
-            
+          // Try to get last active group from local storage first (no database reads)
+          const localKey = `CARDMATES_LAST_SELECTED_GROUP_${authUser.id}`;
+          const savedGroup = await AsyncStorage.getItem(localKey);
+          if (savedGroup) {
+            const parsedGroup = JSON.parse(savedGroup);
+            setCurrentGroup(parsedGroup);
           } else {
-            // New user or no active group - minimal bootstrap
-            console.log('🆕 New user detected, performing minimal bootstrap');
-            setCurrentGroup(null);
-          }
-          
-        } catch (error) {
-          console.error('Error during unified bootstrap:', error);
-          handleError(error, 'Error during unified bootstrap');
-          
-          // Fallback to basic user data fetch
-          try {
-            const userData = await CacheService.getDocument('users', authUser.uid, { ttl: 60 * 1000 });
-            if (userData?.lastActiveGroup) {
-              const groupData = await CacheService.getDocument('groups', userData.lastActiveGroup, { ttl: 2 * 60 * 1000 });
-              if (groupData) {
-                setCurrentGroup({
-                  id: userData.lastActiveGroup,
-                  ...groupData
-                });
-              }
+            // Fallback: single query to Supabase to discover lastActiveGroup
+            const { supabase } = await import('./src/config/supabase');
+            const { data: userData, error } = await supabase
+              .from('users')
+              .select('last_active_group')
+              .eq('id', authUser.id)
+              .single();
+
+            if (!error && userData?.last_active_group) {
+              setCurrentGroup({ id: userData.last_active_group });
             }
-          } catch (fallbackError) {
-            console.error('Fallback bootstrap failed:', fallbackError);
           }
+        } catch (error) {
+          console.error('Error determining last active group:', error);
         }
       } else {
+        // User is signed out, clear all local state
         setUser(null);
         setCurrentGroup(null);
-        setBootData(null);
+
+        // 🚀 OPTIMIZED: End ProductionMonitor session
+        ProductionMonitor.endSession();
       }
+
+      setUserLoaded(true);
     });
-    
+
     return () => unsubscribe();
   }, []);
-  
-  useEffect(() => {
-    if (user && currentGroup) {
-      preWarmCache(user.uid, currentGroup.id).catch(error => {
-        console.error('Error pre-warming cache:', error);
-      });
-    }
-  }, [user, currentGroup]);
+
+  // Show loading screen while determining auth state
+  if (!userLoaded) {
+    return <LoadingScreen />;
+  }
 
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
-      <ThemeErrorBoundary>
-        <Suspense fallback={<LoadingScreen />}>
-          <ThemeProvider>
-            <SettingsProvider>
-              <AuthContextProvider initialUser={user}>
-                <GroupProvider initialGroup={currentGroup}>
-                  <AppContent user={user} bootData={bootData} />
-                </GroupProvider>
-              </AuthContextProvider>
-            </SettingsProvider>
-          </ThemeProvider>
-        </Suspense>
-      </ThemeErrorBoundary>
+      <AuthContextProvider initialUser={user}>
+        <SettingsProvider>
+          <ThemeErrorBoundary>
+            <ThemeProvider>
+              <Suspense fallback={<LoadingScreen />}>
+                <InitialLoadGate uid={user?.id || user?.uid} groupId={currentGroup?.id}>
+                  <AppContent user={user} currentGroup={currentGroup} />
+                </InitialLoadGate>
+              </Suspense>
+            </ThemeProvider>
+          </ThemeErrorBoundary>
+        </SettingsProvider>
+      </AuthContextProvider>
     </GestureHandlerRootView>
   );
 };

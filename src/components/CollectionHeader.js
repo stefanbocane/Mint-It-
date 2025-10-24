@@ -47,20 +47,6 @@ const CollectionHeader = ({
   return (
     <Surface style={styles.headerSurface} elevation={0}>
       <View style={styles.header}>
-        {/* Balance Display */}
-        <View style={styles.balanceContainer}>
-          <View style={styles.balanceRow}>
-            <View style={styles.balanceItem}>
-              <Icon name="circle-multiple" size={16} color="#FFD700" />
-              <Text style={styles.balanceText}>{balance || 0} coins</Text>
-            </View>
-            <View style={styles.balanceItem}>
-              <Icon name="diamond-stone" size={16} color="#9C27B0" />
-              <Text style={styles.balanceText}>{userGems || 0} gems</Text>
-            </View>
-          </View>
-        </View>
-
         <View style={styles.collectionStats}>
           <Text style={styles.statsText}>
             <Text style={[

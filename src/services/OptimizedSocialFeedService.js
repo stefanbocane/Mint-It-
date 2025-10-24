@@ -13,14 +13,17 @@
 import {
     collection,
     doc,
-    getDocs,
     limit,
     orderBy,
     query,
     serverTimestamp,
     writeBatch
 } from 'firebase/firestore';
+// 🚀 TRACKED: Automatic read monitoring
 import { db } from '../config/firebase';
+import CacheService from './caching/CacheService';
+import ReadMonitor from './ReadTracking/ReadMonitor';
+import { getDoc, getDocs } from './ReadTracking/TrackedFirestore';
 import UltraBatchService from './UltraBatchService';
 
 class OptimizedSocialFeedService {
@@ -35,20 +38,76 @@ class OptimizedSocialFeedService {
   }
 
   /**
-   * STEP 3.A.1: Fetch social feed with batch-optimized author and comment loading
-   * Eliminates N+1 queries by batching all related data fetches
+   * 🚀 ULTRA-OPTIMIZED: Fetch social feed using overview-first architecture
+   * Reduces reads from 5-10 to 0-1 per fetch
+   * 
+   * OPTIMIZATION LAYERS:
+   * 1. Cache check (0 reads)
+   * 2. socialOverviews/{groupId} fetch (1 read - entire feed)
+   * 3. Fallback to individual fetches (5-10 reads)
    */
   async fetchOptimizedSocialFeed(groupId, options = {}) {
     const startTime = performance.now();
-    console.log('🚀 OPTIMIZED: Fetching social feed with batch optimization');
+    const { forceRefresh = false, includeDraft = false } = options;
+    const cacheKey = `socialOverviews_${groupId}`;
+    const CACHE_TTL = 45 * 60 * 1000; // 45 minutes
+
+    console.log('🚀 ULTRA-OPT: Fetching social feed with overview-first architecture');
 
     try {
+      // 🎯 LAYER 1: Check cache first (0 reads)
+      if (!forceRefresh) {
+        const cached = await CacheService.getValue(cacheKey);
+        if (cached && cached.data && Date.now() - (cached.timestamp || 0) < CACHE_TTL) {
+          ReadMonitor.trackRead('SocialFeedService', 'cache_hit', { groupId, fromCache: true });
+          console.log(`✅ ULTRA-OPT: Cache hit for ${cacheKey} (0 reads)`);
+          
+          return {
+            posts: cached.data.posts || [],
+            metrics: this.getMetrics(),
+            loadTime: performance.now() - startTime,
+            source: 'cache'
+          };
+        }
+      }
+
+      // 🎯 LAYER 2: Fetch socialOverview document (1 read - entire feed)
+      const overviewRef = doc(db, 'socialOverviews', groupId);
+      const overviewSnap = await getDoc(overviewRef);
+      
+      ReadMonitor.trackRead('SocialFeedService', 'overview_fetch', { groupId, fromCache: false });
+
+      if (overviewSnap.exists()) {
+        const overviewData = overviewSnap.data();
+        const posts = overviewData.posts || [];
+        
+        // Cache the result
+        await CacheService.setValue(cacheKey, {
+          data: overviewData,
+          timestamp: Date.now()
+        }, { ttl: CACHE_TTL });
+
+        const duration = performance.now() - startTime;
+        console.log(`✅ ULTRA-OPT: Overview fetch for ${cacheKey} (1 read, ${posts.length} posts)`);
+        console.log(`   Load time: ${duration.toFixed(2)}ms`);
+
+        return {
+          posts,
+          metrics: this.getMetrics(),
+          loadTime: duration,
+          source: 'overview'
+        };
+      }
+
+      // 🎯 LAYER 3: Fallback to individual fetches (5-10 reads)
+      console.log(`⚠️ ULTRA-OPT: No overview found, falling back to individual fetches`);
+      
       // Step 1: Fetch posts batch
       const posts = await this.fetchPostsBatch(groupId, options);
       
       if (posts.length === 0) {
         console.log('📭 No posts found in social feed');
-        return { posts: [], metrics: this.getMetrics() };
+        return { posts: [], metrics: this.getMetrics(), source: 'empty' };
       }
 
       // Step 2: Extract unique author IDs from all posts
@@ -72,7 +131,7 @@ class OptimizedSocialFeedService {
       }));
 
       const duration = performance.now() - startTime;
-      console.log(`✅ OPTIMIZED: Social feed loaded in ${duration.toFixed(2)}ms`);
+      console.log(`✅ OPTIMIZED: Social feed loaded in ${duration.toFixed(2)}ms (fallback)`);
       console.log(`📊 ELIMINATED: ${posts.length} author queries + ${posts.length} comment queries = ${posts.length * 2} total queries`);
       
       this.metrics.eliminatedQueries += posts.length * 2; // Eliminated author + comment queries per post
@@ -80,7 +139,8 @@ class OptimizedSocialFeedService {
       return {
         posts: enrichedPosts,
         metrics: this.getMetrics(),
-        loadTime: duration
+        loadTime: duration,
+        source: 'fallback'
       };
 
     } catch (error) {
@@ -349,26 +409,22 @@ class OptimizedSocialFeedService {
         return { groups: [], metrics: this.getMetrics() };
       }
 
-      // Batch fetch all group details
-      const groupsMap = await UltraBatchService.batchGetDocuments(
-        'groups', 
-        userData.groups, 
-        {
-          cacheFirst: true,
-          cacheTTL: options.forceRefresh ? 0 : 10 * 60 * 1000
-        }
-      );
+      // Fetch actual group documents so we have names and other data
+      const groupDataMap = await UltraBatchService.batchGetDocuments('groups', userData.groups, {
+        cacheFirst: true,
+        cacheTTL: options.forceRefresh ? 0 : 5 * 60 * 1000 // 5 min cache for groups
+      });
 
-      // Convert map to array with IDs
+      // Convert map to array with full group data
       const groups = userData.groups
         .map(groupId => {
-          const groupData = groupsMap.get(groupId);
+          const groupData = groupDataMap.get(groupId);
           return groupData ? { id: groupId, ...groupData } : null;
         })
-        .filter(Boolean);
+        .filter(Boolean); // Remove any null entries
 
-      console.log(`✅ OPTIMIZED: Fetched ${groups.length} groups using batch operations`);
-      
+      console.log(`✅ OPTIMIZED: Loaded ${groups.length} groups`);
+
       return {
         groups,
         metrics: this.getMetrics()

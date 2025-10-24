@@ -1,5 +1,7 @@
-import { collection, getDocs, query, where } from 'firebase/firestore';
+import { collection, query, where } from 'firebase/firestore';
+// 🚀 TRACKED: Automatic read monitoring
 import { db } from '../config/firebase';
+import { getDocs } from '../services/ReadTracking/TrackedFirestore';
 import { invalidateCache } from './firestoreUtils';
 
 // Constants

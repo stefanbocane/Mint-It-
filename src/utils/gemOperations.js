@@ -1,5 +1,9 @@
-import { addDoc, collection, doc, getDoc, runTransaction, serverTimestamp } from 'firebase/firestore';
+import { addDoc, collection, doc, serverTimestamp } from 'firebase/firestore';
+// 🚀 TRACKED: Automatic read monitoring
+import { runTransaction } from '../services/ReadTracking/TrackedFirestore';
+// 🚀 TRACKED: Automatic read monitoring
 import { db } from '../config/firebase';
+import { getDoc } from '../services/ReadTracking/TrackedFirestore';
 
 // Rarities and their values
 const RARITIES = {
@@ -116,7 +120,7 @@ export const getGems = async (userId, { groupId, preferGlobal = false } = {}) =>
   try {
     console.log(`💎 Getting gems for user ${userId}${groupId ? ` (group: ${groupId})` : ''}`);
     
-    const userDoc = await getDoc(doc(db, 'users', userId));
+    const userDoc = await getDoc(doc(db, 'users', userId, 'sessions', 'main'));
     if (!userDoc.exists()) {
       console.warn(`User document not found: ${userId}`);
       return 0;

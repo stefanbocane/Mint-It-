@@ -4,8 +4,8 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Alert, Animated, Easing, FlatList, Image, StyleSheet, TouchableOpacity, View } from 'react-native';
 import { ActivityIndicator, Button, Card, Modal, Portal, Surface, Text, useTheme } from 'react-native-paper';
 import { db } from '../config/firebase';
-import { useAuth } from '../contexts/AuthContext';
-import { useGroup } from '../contexts/GroupContext';
+import { useAuth } from '../contexts/AuthContextSupabase';
+import { useGroup } from '../contexts/GroupContextSupabase';
 import { useBalance, useGems } from '../hooks/useBackwardCompatibility';
 import CacheService from '../services/caching/CacheService';
 import { BORDER_OPTIONS, getBorderAnimationStyle } from '../utils/borderOptions';
@@ -242,7 +242,10 @@ const StoreContent = ({ navigation }) => {
         }
       }
     } catch (error) {
-      console.error('Error loading user borders:', error);
+      // Silenced: Firebase not available, store needs Supabase migration
+      if (__DEV__) {
+        console.warn('Store borders unavailable (Firebase → Supabase migration pending)');
+      }
       setUserBorders(['default']);
     }
   };
