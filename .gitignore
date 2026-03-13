@@ -73,9 +73,23 @@ google-services.json
 GoogleService-Info.plist
 
 # IDE specific files
-.vscode/settings.json
+.vscode/
+.cursor/
 .idea/
 
 # OS generated files
 Thumbs.db
 .env.supabase
+
+# Internal docs and migration scripts
+docs-archive/
+docs-claude/
+src_backup_*/
+*-migration*.js
+*-migration*.sh
+deploy-*.js
+deploy-*.sh
+setup-supabase*.js
+verify-*.js
+execute-sql.js
+*.sql

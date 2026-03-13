@@ -17,8 +17,12 @@ import { Platform } from 'react-native';
 
 // Supabase project credentials
 // Loaded from .env file (EXPO_PUBLIC_ prefix required for Expo)
-const SUPABASE_URL = process.env.EXPO_PUBLIC_SUPABASE_URL || 'https://REDACTED_SUPABASE_URL';
+const SUPABASE_URL = process.env.EXPO_PUBLIC_SUPABASE_URL || '';
 const SUPABASE_ANON_KEY = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || '';
+
+if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+  console.warn('Supabase config missing — set EXPO_PUBLIC_SUPABASE_URL and EXPO_PUBLIC_SUPABASE_ANON_KEY in .env');
+}
 
 // Initialize Supabase client
 export const supabase: SupabaseClient = createClient(

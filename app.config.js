@@ -9,14 +9,14 @@ export default {
     sdkVersion: "53.0.0",
     runtimeVersion: "53",
     entryPoint: "./index.js",
-    projectId: process.env.EXPO_PROJECT_ID || "420acf72-35f8-422e-935e-88116abe9832",
+    projectId: process.env.EXPO_PROJECT_ID,
     splash: {
       image: "./assets/images/splash-icon.png",
       resizeMode: "contain",
       backgroundColor: "#ffffff"
     },
     updates: {
-      url: "https://u.expo.dev/420acf72-35f8-422e-935e-88116abe9832"
+      url: `https://u.expo.dev/${process.env.EXPO_PROJECT_ID}`
     },
     assetBundlePatterns: [
       "**/*"

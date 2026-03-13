@@ -1,0 +1,101 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="300" viewBox="0 0 900 300">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0d1117"/>
+      <stop offset="50%" style="stop-color:#111a2b"/>
+      <stop offset="100%" style="stop-color:#0d1117"/>
+    </linearGradient>
+    <linearGradient id="mint" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#4FC3A1"/>
+      <stop offset="100%" style="stop-color:#2dd4bf"/>
+    </linearGradient>
+    <linearGradient id="gold" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#f59e0b"/>
+      <stop offset="100%" style="stop-color:#fbbf24"/>
+    </linearGradient>
+    <linearGradient id="cardFace" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#1a2744"/>
+      <stop offset="100%" style="stop-color:#0f1b30"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="50%" cy="50%" r="35%">
+      <stop offset="0%" style="stop-color:#4FC3A1;stop-opacity:0.1"/>
+      <stop offset="100%" style="stop-color:#0d1117;stop-opacity:0"/>
+    </radialGradient>
+    <filter id="blur1" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="15"/>
+    </filter>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="2" dy="4" stdDeviation="6" flood-color="#4FC3A1" flood-opacity="0.25"/>
+    </filter>
+    <filter id="goldGlow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="3"/>
+    </filter>
+  </defs>
+
+  <!-- Background -->
+  <rect width="900" height="300" fill="url(#bg)"/>
+  <ellipse cx="450" cy="150" rx="350" ry="120" fill="url(#glow)" filter="url(#blur1)"/>
+
+  <!-- Subtle dot grid -->
+  <g opacity="0.06" fill="#4FC3A1">
+    <circle cx="50" cy="50" r="1"/><circle cx="100" cy="50" r="1"/><circle cx="150" cy="50" r="1"/><circle cx="200" cy="50" r="1"/><circle cx="250" cy="50" r="1"/><circle cx="300" cy="50" r="1"/><circle cx="350" cy="50" r="1"/><circle cx="400" cy="50" r="1"/><circle cx="450" cy="50" r="1"/><circle cx="500" cy="50" r="1"/><circle cx="550" cy="50" r="1"/><circle cx="600" cy="50" r="1"/><circle cx="650" cy="50" r="1"/><circle cx="700" cy="50" r="1"/><circle cx="750" cy="50" r="1"/><circle cx="800" cy="50" r="1"/><circle cx="850" cy="50" r="1"/>
+    <circle cx="50" cy="100" r="1"/><circle cx="100" cy="100" r="1"/><circle cx="150" cy="100" r="1"/><circle cx="200" cy="100" r="1"/><circle cx="250" cy="100" r="1"/><circle cx="300" cy="100" r="1"/><circle cx="350" cy="100" r="1"/><circle cx="400" cy="100" r="1"/><circle cx="450" cy="100" r="1"/><circle cx="500" cy="100" r="1"/><circle cx="550" cy="100" r="1"/><circle cx="600" cy="100" r="1"/><circle cx="650" cy="100" r="1"/><circle cx="700" cy="100" r="1"/><circle cx="750" cy="100" r="1"/><circle cx="800" cy="100" r="1"/><circle cx="850" cy="100" r="1"/>
+    <circle cx="50" cy="150" r="1"/><circle cx="100" cy="150" r="1"/><circle cx="150" cy="150" r="1"/><circle cx="200" cy="150" r="1"/><circle cx="250" cy="150" r="1"/><circle cx="300" cy="150" r="1"/><circle cx="350" cy="150" r="1"/><circle cx="400" cy="150" r="1"/><circle cx="450" cy="150" r="1"/><circle cx="500" cy="150" r="1"/><circle cx="550" cy="150" r="1"/><circle cx="600" cy="150" r="1"/><circle cx="650" cy="150" r="1"/><circle cx="700" cy="150" r="1"/><circle cx="750" cy="150" r="1"/><circle cx="800" cy="150" r="1"/><circle cx="850" cy="150" r="1"/>
+    <circle cx="50" cy="200" r="1"/><circle cx="100" cy="200" r="1"/><circle cx="150" cy="200" r="1"/><circle cx="200" cy="200" r="1"/><circle cx="250" cy="200" r="1"/><circle cx="300" cy="200" r="1"/><circle cx="350" cy="200" r="1"/><circle cx="400" cy="200" r="1"/><circle cx="450" cy="200" r="1"/><circle cx="500" cy="200" r="1"/><circle cx="550" cy="200" r="1"/><circle cx="600" cy="200" r="1"/><circle cx="650" cy="200" r="1"/><circle cx="700" cy="200" r="1"/><circle cx="750" cy="200" r="1"/><circle cx="800" cy="200" r="1"/><circle cx="850" cy="200" r="1"/>
+    <circle cx="50" cy="250" r="1"/><circle cx="100" cy="250" r="1"/><circle cx="150" cy="250" r="1"/><circle cx="200" cy="250" r="1"/><circle cx="250" cy="250" r="1"/><circle cx="300" cy="250" r="1"/><circle cx="350" cy="250" r="1"/><circle cx="400" cy="250" r="1"/><circle cx="450" cy="250" r="1"/><circle cx="500" cy="250" r="1"/><circle cx="550" cy="250" r="1"/><circle cx="600" cy="250" r="1"/><circle cx="650" cy="250" r="1"/><circle cx="700" cy="250" r="1"/><circle cx="750" cy="250" r="1"/><circle cx="800" cy="250" r="1"/><circle cx="850" cy="250" r="1"/>
+  </g>
+
+  <!-- Decorative card (left, tilted back) -->
+  <g transform="translate(170, 75) rotate(-12)" filter="url(#shadow)" opacity="0.5">
+    <rect width="70" height="95" rx="6" fill="url(#cardFace)" stroke="#4FC3A1" stroke-width="1" opacity="0.7"/>
+    <rect x="8" y="8" width="54" height="35" rx="3" fill="#4FC3A1" opacity="0.12"/>
+    <circle cx="35" cy="25" r="8" fill="#4FC3A1" opacity="0.2"/>
+    <rect x="8" y="50" width="35" height="4" rx="2" fill="#4FC3A1" opacity="0.15"/>
+    <rect x="8" y="58" width="25" height="3" rx="1.5" fill="#4FC3A1" opacity="0.1"/>
+    <!-- Rarity stars -->
+    <g transform="translate(20, 75)" fill="#f59e0b" opacity="0.5">
+      <polygon points="5,0 6.5,3.5 10,3.5 7.2,5.8 8.2,9.5 5,7.2 1.8,9.5 2.8,5.8 0,3.5 3.5,3.5"/>
+      <polygon points="18,0 19.5,3.5 23,3.5 20.2,5.8 21.2,9.5 18,7.2 14.8,9.5 15.8,5.8 13,3.5 16.5,3.5"/>
+      <polygon points="31,0 32.5,3.5 36,3.5 33.2,5.8 34.2,9.5 31,7.2 27.8,9.5 28.8,5.8 26,3.5 29.5,3.5"/>
+    </g>
+  </g>
+
+  <!-- Decorative card (right, tilted forward) -->
+  <g transform="translate(665, 80) rotate(10)" filter="url(#shadow)" opacity="0.5">
+    <rect width="70" height="95" rx="6" fill="url(#cardFace)" stroke="#f59e0b" stroke-width="1" opacity="0.7"/>
+    <rect x="8" y="8" width="54" height="35" rx="3" fill="#f59e0b" opacity="0.12"/>
+    <circle cx="35" cy="25" r="8" fill="#f59e0b" opacity="0.2"/>
+    <rect x="8" y="50" width="35" height="4" rx="2" fill="#f59e0b" opacity="0.15"/>
+    <rect x="8" y="58" width="25" height="3" rx="1.5" fill="#f59e0b" opacity="0.1"/>
+    <!-- Coin icon -->
+    <circle cx="35" cy="80" r="8" fill="none" stroke="#f59e0b" stroke-width="1.5" opacity="0.5"/>
+    <text x="35" y="84" text-anchor="middle" font-family="Arial" font-size="10" font-weight="700" fill="#f59e0b" opacity="0.5">$</text>
+  </g>
+
+  <!-- Camera icon (small, above title) -->
+  <g transform="translate(425, 68)" opacity="0.7">
+    <rect x="0" y="8" width="50" height="35" rx="5" fill="none" stroke="#4FC3A1" stroke-width="1.5"/>
+    <path d="M15,8 L18,2 L32,2 L35,8" fill="none" stroke="#4FC3A1" stroke-width="1.5"/>
+    <circle cx="25" cy="25" r="9" fill="none" stroke="#4FC3A1" stroke-width="1.5"/>
+    <circle cx="25" cy="25" r="5" fill="#4FC3A1" opacity="0.2"/>
+    <!-- Flash -->
+    <path d="M48,4 L46,8 L50,8 L47,13" fill="none" stroke="#f59e0b" stroke-width="1.2" opacity="0.6"/>
+  </g>
+
+  <!-- Title -->
+  <text x="450" y="148" text-anchor="middle" font-family="'SF Pro Display', 'Helvetica Neue', Arial, sans-serif" font-size="44" font-weight="800" fill="#f0f4f8" letter-spacing="2">CardMates</text>
+  <text x="450" y="177" text-anchor="middle" font-family="'SF Pro Display', 'Helvetica Neue', Arial, sans-serif" font-size="14" font-weight="400" fill="#64748b" letter-spacing="4">SNAP. MINT. COLLECT. TRADE.</text>
+
+  <!-- Tagline -->
+  <text x="450" y="215" text-anchor="middle" font-family="'SF Pro Display', 'Helvetica Neue', Arial, sans-serif" font-size="12" font-weight="300" fill="#475569" letter-spacing="1">Turn real-world photos into collectible trading cards.</text>
+
+  <!-- Platform badges -->
+  <g transform="translate(340, 235)">
+    <rect x="0" y="0" width="60" height="22" rx="11" fill="none" stroke="#4FC3A1" stroke-width="1" opacity="0.45"/>
+    <text x="30" y="15" text-anchor="middle" font-family="'SF Pro Display', 'Helvetica Neue', Arial, sans-serif" font-size="9" font-weight="600" fill="#4FC3A1" letter-spacing="1.5" opacity="0.65">iOS</text>
+    <rect x="72" y="0" width="85" height="22" rx="11" fill="none" stroke="#4FC3A1" stroke-width="1" opacity="0.45"/>
+    <text x="114.5" y="15" text-anchor="middle" font-family="'SF Pro Display', 'Helvetica Neue', Arial, sans-serif" font-size="9" font-weight="600" fill="#4FC3A1" letter-spacing="1.5" opacity="0.65">ANDROID</text>
+    <rect x="169" y="0" width="60" height="22" rx="11" fill="none" stroke="#4FC3A1" stroke-width="1" opacity="0.45"/>
+    <text x="199" y="15" text-anchor="middle" font-family="'SF Pro Display', 'Helvetica Neue', Arial, sans-serif" font-size="9" font-weight="600" fill="#4FC3A1" letter-spacing="1.5" opacity="0.65">WEB</text>
+  </g>
+</svg>
